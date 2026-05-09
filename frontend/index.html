@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — Dashboard</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+
+    <!-- ── Loading state ────────────────────────────────────── -->
+    <div id="auth-loading" class="auth-loading">
+      <span class="auth-spinner"></span>
+    </div>
+
+    <!-- ── Auth ─────────────────────────────────────────────── -->
+    <section id="auth-section" class="section card hidden">
+      <h2>Welcome to CardSwap</h2>
+      <p class="muted">Trade gift cards for crypto, securely.</p>
+      <button id="btn-google-signin" class="btn-google">
+        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" width="20" height="20" />
+        Sign in with Google
+      </button>
+      <p id="auth-error" class="error"></p>
+    </section>
+
+    <!-- ── Dashboard grid (shown after login) ──────────────── -->
+    <div id="dashboard" class="hidden">
+      <h1 class="dashboard-greeting" id="dashboard-greeting">Welcome back</h1>
+      <div class="dashboard-grid">
+
+        <a href="/p2p.html" class="dash-card">
+          <div class="dash-icon">🔄</div>
+          <div class="dash-label">P2P Crypto</div>
+          <div class="dash-desc">Browse offers and start crypto P2P trades</div>
+        </a>
+
+        <a href="#" class="dash-card" data-coming-soon="contract-work">
+          <div class="dash-icon">🧰</div>
+          <div class="dash-label">P2P Work / Contract Work</div>
+          <div class="dash-desc">Find and post crypto-paid contract gigs</div>
+        </a>
+
+        <a href="/swaps.html" class="dash-card">
+          <div class="dash-icon">🪙</div>
+          <div class="dash-label">Crypto Swaps</div>
+          <div class="dash-desc">Find and accept open swap offers</div>
+        </a>
+
+        <a href="/wallet.html" class="dash-card">
+          <div class="dash-icon">💰</div>
+          <div class="dash-label">My Wallet</div>
+          <div class="dash-desc">View balances, deposit &amp; withdraw</div>
+        </a>
+
+        <a href="/offers.html" class="dash-card">
+          <div class="dash-icon">📋</div>
+          <div class="dash-label">My P2P Crypto Offers</div>
+          <div class="dash-desc">Create and manage crypto-payment offers</div>
+        </a>
+
+        <a href="/work-offers.html" class="dash-card">
+          <div class="dash-icon">🧱</div>
+          <div class="dash-label">My Work Offers</div>
+          <div class="dash-desc">Create and manage your contract work offers</div>
+        </a>
+
+        <a href="/my-swap-offers.html" class="dash-card">
+          <div class="dash-icon">🔁</div>
+          <div class="dash-label">My Swap Offers</div>
+          <div class="dash-desc">Post and manage your crypto swap offers</div>
+        </a>
+
+        <a href="/past-trades.html" class="dash-card">
+          <div class="dash-icon">💬</div>
+          <div class="dash-label">Feedback</div>
+          <div class="dash-desc">Review ratings from completed trades</div>
+        </a>
+
+        <a href="#" class="dash-card" data-coming-soon="referrals">
+          <div class="dash-icon">🎁</div>
+          <div class="dash-label">Referrals</div>
+          <div class="dash-desc">Invite friends and track referral rewards</div>
+        </a>
+
+        <a href="#" class="dash-card" data-coming-soon="badges">
+          <div class="dash-icon">🏅</div>
+          <div class="dash-label">Badges</div>
+          <div class="dash-desc">Unlock profile badges from trade milestones</div>
+        </a>
+
+        <a href="#" class="dash-card" data-coming-soon="charts">
+          <div class="dash-icon">📈</div>
+          <div class="dash-label">Crypto Price Charts</div>
+          <div class="dash-desc">Monitor live market charts for supported coins</div>
+        </a>
+
+        <a href="#" class="dash-card" data-coming-soon="predictions">
+          <div class="dash-icon">🎲</div>
+          <div class="dash-label">P2P Predictions/Gambling</div>
+          <div class="dash-desc">Peer-to-peer predictions and game pools</div>
+        </a>
+
+        <a href="/ads.html" class="dash-card">
+          <div class="dash-icon">📣</div>
+          <div class="dash-label">P2P Ads</div>
+          <div class="dash-desc">Post ads and earn cents for watching ads</div>
+        </a>
+
+        <a href="/trades.html" class="dash-card">
+          <div class="dash-icon">⚡</div>
+          <div class="dash-label">My Trades</div>
+          <div class="dash-desc">Track active and past trades in one place</div>
+        </a>
+
+        <a href="/settings.html" class="dash-card">
+          <div class="dash-icon">⚙️</div>
+          <div class="dash-label">Account Settings</div>
+          <div class="dash-desc">Manage your profile and preferences</div>
+        </a>
+
+        <a href="/support.html" class="dash-card">
+          <div class="dash-icon">🛟</div>
+          <div class="dash-label">Support</div>
+          <div class="dash-desc">Get help or report an issue</div>
+        </a>
+
+        <a href="/scanner.html" class="dash-card">
+          <div class="dash-icon">🔍</div>
+          <div class="dash-label">Gift Card Verifier</div>
+          <div class="dash-desc">Check if a card has been seen or used on this platform</div>
+        </a>
+
+        <a href="/trade-partners.html" class="dash-card">
+          <div class="dash-icon">🤝</div>
+          <div class="dash-label">Trade Partners</div>
+          <div class="dash-desc">Manage both trusted and blocked trading partners</div>
+        </a>
+
+      </div>
+    </div>
+
+  </div><!-- /app -->
+
+  <script type="module" src="/src/main.js"></script>
+</body>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — Trade Partners</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <div class="page-header">
+      <h1>Trade Partners</h1>
+    </div>
+
+    <section class="section card" style="margin-bottom:1rem;">
+      <h2 style="margin:0 0 0.5rem;">Trusted Partners</h2>
+      <p class="muted" style="margin-bottom:1rem">
+        Trusted partners can get priority matching in the P2P market.
+      </p>
+
+      <div style="display:flex;gap:.5rem;margin-bottom:1.25rem;max-width:440px">
+        <input id="input-trust-user" class="form-input" type="text" placeholder="Enter username or UID" style="flex:1" />
+        <button id="btn-trust-user" class="btn-primary">Add Partner</button>
+      </div>
+      <p id="trust-error" class="error" style="font-size:.85rem;margin-bottom:.75rem"></p>
+
+      <div id="trusted-list" class="user-list">
+        <div class="list-loading"><span class="list-spinner"></span>Loading…</div>
+      </div>
+    </section>
+
+    <section class="section card">
+      <h2 style="margin:0 0 0.5rem;">Blocked Partners</h2>
+      <p class="muted" style="margin-bottom:1rem">
+        Blocked users cannot initiate trades with you.
+      </p>
+
+      <div style="display:flex;gap:.5rem;margin-bottom:1.25rem;max-width:440px">
+        <input id="input-block-user" class="form-input" type="text" placeholder="Enter username or UID" style="flex:1" />
+        <button id="btn-block-user" class="btn-primary">Block</button>
+      </div>
+      <p id="block-error" class="error" style="font-size:.85rem;margin-bottom:.75rem"></p>
+
+      <div id="blocked-list" class="user-list">
+        <div class="list-loading"><span class="list-spinner"></span>Loading…</div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast-container"></div>
+  <script type="module" src="/src/pages/trade-partners-page.js"></script>
+</body>
+</html>

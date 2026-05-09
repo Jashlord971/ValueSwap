@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — My Trades</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <section class="section">
+      <h2 style="margin:0 0 0.85rem;">Active Trades</h2>
+      <div id="active-trades-list" class="trade-cards-grid">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+
+    <section class="section" style="margin-top:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <h2 style="margin:0;">Past Trades</h2>
+        <button id="past-trades-filters-toggle" class="btn-sm" type="button">Show Filters</button>
+      </div>
+
+      <div id="past-trades-filters-panel" class="card hidden" style="margin-top:0.85rem;padding:0.85rem;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;">
+          <div>
+            <span class="muted" style="font-size:0.85rem;display:block;margin-bottom:0.35rem;">Crypto</span>
+            <div id="filter-past-coin" style="display:flex;flex-direction:column;gap:0.35rem;"></div>
+          </div>
+          <div>
+            <span class="muted" style="font-size:0.85rem;display:block;margin-bottom:0.35rem;">Trade Type</span>
+            <div id="filter-past-type" style="display:flex;flex-direction:column;gap:0.35rem;"></div>
+          </div>
+          <div>
+            <span class="muted" style="font-size:0.85rem;display:block;margin-bottom:0.35rem;">Payment Method</span>
+            <div id="filter-past-method" style="display:flex;flex-direction:column;gap:0.35rem;"></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-top:0.75rem;">
+          <label style="display:flex;flex-direction:column;gap:0.35rem;">
+            <span class="muted" style="font-size:0.85rem;">From Date</span>
+            <input id="filter-past-date-from" class="form-input" type="date" />
+          </label>
+          <label style="display:flex;flex-direction:column;gap:0.35rem;">
+            <span class="muted" style="font-size:0.85rem;">To Date</span>
+            <input id="filter-past-date-to" class="form-input" type="date" />
+          </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.7rem;">
+          <button id="btn-download-past-csv" class="btn-sm" type="button">Download CSV</button>
+          <button id="btn-apply-past-filters" class="btn-primary" type="button">Apply</button>
+          <button id="btn-clear-past-filters" class="btn-sm" type="button">Clear Filters</button>
+        </div>
+      </div>
+
+      <div id="past-trades-list" class="trade-cards-grid" style="margin-top:0.9rem;">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+
+
+  </div>
+
+  <script type="module" src="/src/pages/trades-page.js"></script>
+</body>
+</html>

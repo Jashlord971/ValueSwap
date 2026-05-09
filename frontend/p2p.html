@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — P2P Market</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app" class="p2p-app">
+    <section class="p2p-hero">
+      <div class="p2p-hero-copy">
+        <h1 id="p2p-hero-title">Buy Bitcoin with popular payment methods</h1>
+        <div class="p2p-hero-controls">
+          <div class="p2p-type-toggle" role="tablist" aria-label="Trade side">
+            <button id="p2p-type-buy" class="p2p-type-btn active" data-type="buy">Buy</button>
+            <button id="p2p-type-sell" class="p2p-type-btn" data-type="sell">Sell</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section p2p-toolbar-card">
+      <div class="p2p-toolbar">
+        <input id="p2p-amount" class="p2p-toolbar-input" type="number" min="0" step="0.01" placeholder="Amount" />
+
+        <div class="p2p-custom-select" id="p2p-coin-wrap">
+          <button type="button" class="p2p-custom-select-btn" id="p2p-coin-btn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="p2p-coin-label">BTC</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="p2p-custom-select-panel hidden" id="p2p-coin-panel">
+            <div class="p2p-select-search-wrap">
+              <input type="text" class="p2p-select-search-input" id="p2p-coin-search" placeholder="Search coins…" autocomplete="off" />
+            </div>
+            <ul class="p2p-custom-select-list" id="p2p-coin-list" role="listbox" aria-label="Coin">
+              <li data-value="BTC" role="option" class="selected">BTC — Bitcoin</li>
+              <li data-value="ETH" role="option">ETH — Ethereum</li>
+              <li data-value="USDT" role="option">USDT — Tether</li>
+              <li data-value="USDC" role="option">USDC — USD Coin</li>
+              <li data-value="TRX" role="option">TRX — Tron</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="p2p-custom-select" id="p2p-currency-wrap">
+          <button type="button" class="p2p-custom-select-btn" id="p2p-currency-btn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="p2p-currency-label">All currencies</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="p2p-custom-select-panel hidden" id="p2p-currency-panel">
+            <div class="p2p-select-search-wrap">
+              <input type="text" class="p2p-select-search-input" id="p2p-currency-search" placeholder="Search currencies…" autocomplete="off" />
+            </div>
+            <ul class="p2p-custom-select-list" id="p2p-currency-list" role="listbox" aria-label="Currency">
+              <li data-value="" role="option" class="selected">All currencies</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="p2p-custom-select" id="p2p-pm-wrap">
+          <button type="button" class="p2p-custom-select-btn" id="p2p-pm-btn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="p2p-pm-label">All methods</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="p2p-custom-select-panel hidden" id="p2p-pm-panel">
+            <div class="p2p-select-search-wrap">
+              <input type="text" class="p2p-select-search-input" id="p2p-pm-search" placeholder="Search methods…" autocomplete="off" />
+            </div>
+            <ul class="p2p-custom-select-list" id="p2p-pm-list" role="listbox" aria-label="Payment method">
+              <li data-value="" role="option" class="selected">All methods</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="p2p-toolbar-actions">
+          <div class="p2p-custom-select p2p-sort-wrap" id="p2p-sort-wrap">
+            <button type="button" class="p2p-action-btn p2p-sort-btn" id="p2p-sort-btn" title="Sort offers" aria-haspopup="true" aria-expanded="false">
+              <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="9" y1="18" x2="15" y2="18"/></svg>
+            </button>
+            <div class="p2p-custom-select-panel p2p-sort-panel hidden" id="p2p-sort-panel">
+              <ul class="p2p-custom-select-list" id="p2p-sort-list">
+                <li data-value="reputation" class="selected">Best reputation</li>
+                <li data-value="profit_asc">Lowest margin</li>
+                <li data-value="profit_desc">Highest margin</li>
+                <li data-value="trades">Most trades</li>
+                <li data-value="newest">Newest first</li>
+              </ul>
+            </div>
+          </div>
+          <a href="/offers.html" class="p2p-action-btn p2p-create-btn" title="Create an offer" aria-label="Create an offer">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </a>
+          <button id="p2p-reset" class="p2p-action-btn p2p-reset-btn" title="Reset filters" aria-label="Reset filters">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div id="p2p-list" class="p2p-offer-list"><p class="muted">Loading offers…</p></div>
+    </section>
+  </div>
+
+  <script type="module" src="/src/pages/p2p-page.js"></script>
+</body>
+</html>

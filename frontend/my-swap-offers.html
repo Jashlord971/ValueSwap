@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — My Swap Offers</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <div class="page-header page-header-split">
+      <div>
+        <h1>My Swap Offers</h1>
+        <p class="muted">Create and manage your base/target crypto swap offers.</p>
+      </div>
+      <a href="/swaps.html" class="btn-sm btn-secondary">Swap Market</a>
+    </div>
+
+    <section id="my-swap-offers-section" class="section card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.25rem">
+        <span class="muted">Your posted swap offers (no on-platform swap fee)</span>
+        <button id="btn-new-swap" class="btn-sm">+ Add Swap</button>
+      </div>
+      <div id="swap-offers-list"></div>
+    </section>
+
+  </div>
+
+  <!-- Add Swap Offer Modal -->
+  <div id="swap-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title">
+    <div class="modal offer-modal">
+      <div class="modal-header">
+        <h3 id="swap-modal-title">New Swap Offer</h3>
+        <button id="close-swap-modal" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-row">
+          <label for="swap-from-coin">Base crypto (you send)</label>
+          <select id="swap-from-coin" class="form-input">
+            <option value="btc">BTC</option>
+            <option value="eth">ETH</option>
+            <option value="usdt">USDT</option>
+            <option value="usdc" selected>USDC</option>
+            <option value="trx">TRX</option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <label for="swap-from-amount">Amount to send</label>
+          <input id="swap-from-amount" type="number" min="0" step="0.00000001" placeholder="e.g. 100" />
+        </div>
+
+        <div class="field-row">
+          <label for="swap-to-coin">Target crypto (you receive)</label>
+          <select id="swap-to-coin" class="form-input">
+            <option value="btc">BTC</option>
+            <option value="eth" selected>ETH</option>
+            <option value="usdt">USDT</option>
+            <option value="usdc">USDC</option>
+            <option value="trx">TRX</option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <label for="swap-taker-profit">Taker profit (%)</label>
+          <input id="swap-taker-profit" type="number" min="0" max="50" step="0.1" placeholder="e.g. 2.5" />
+        </div>
+
+        <div class="field-row">
+          <label for="swap-expiry">Offer expiry</label>
+          <select id="swap-expiry" class="form-input">
+            <option value="900">15 minutes</option>
+            <option value="3600" selected>1 hour</option>
+            <option value="21600">6 hours</option>
+            <option value="86400">24 hours</option>
+          </select>
+        </div>
+
+        <p class="muted">No on-platform swap fee is charged.</p>
+        <p id="swap-modal-error" class="error"></p>
+        <button id="btn-submit-swap" style="width:100%">Post Swap Offer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <script type="module" src="/src/pages/swaps-page.js"></script>
+</body>
+</html>

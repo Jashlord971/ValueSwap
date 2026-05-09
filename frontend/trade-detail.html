@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trade Details — CardSwap</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <div id="auth-loading" class="auth-loading">
+      <span class="auth-spinner"></span>
+    </div>
+
+    <div id="trade-detail-page" class="hidden">
+      <div class="trade-layout">
+
+        <!-- Left sidebar: Trade info card + status card -->
+        <aside class="trade-sidebar">
+          <div class="card" style="margin-bottom: 1rem;">
+            <div id="trade-card-container"></div>
+          </div>
+          <div class="card">
+            <div id="trade-status-container"></div>
+          </div>
+        </aside>
+
+        <!-- Right main column -->
+        <div class="trade-main">
+
+          <!-- Trade Terms (first) -->
+          <div class="section card" id="trade-terms-card">
+            <h2 style="margin-bottom: 0.75rem;">Trade Terms</h2>
+            <p id="trade-terms-text" style="white-space: pre-wrap; line-height: 1.6;"></p>
+          </div>
+
+          <!-- Chat Section -->
+          <div class="section card">
+            <div class="chat-section-header">
+              <div>
+                <h2 style="margin-bottom:0">Trade Chat</h2>
+                <p id="chat-partner-label" class="muted"></p>
+              </div>
+            </div>
+            <div id="chat-messages"></div>
+            <div id="chat-input-area">
+              <div id="chat-image-preview" class="chat-image-preview"></div>
+              <div class="chat-input-row">
+                <input id="chat-text" type="text" placeholder="Type a message…" autocomplete="off" />
+                <label class="file-btn" title="Attach image">
+                  📎
+                  <input id="chat-image-input" type="file" accept="image/*" class="hidden" />
+                </label>
+                <button id="btn-send-msg">Send</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Trade Actions (below chat) -->
+          <div class="section card" id="trade-actions-card">
+            <h2 style="margin-bottom:0.75rem">Trade Actions</h2>
+            <div id="trade-actions-container"></div>
+          </div>
+
+        </div><!-- /.trade-main -->
+      </div><!-- /.trade-layout -->
+    </div>
+  </div>
+
+  <script type="module" src="/src/pages/trade-detail-page.js"></script>
+</body>
+</html>

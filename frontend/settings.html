@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — Account Settings</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <div class="page-header">
+      <h1>Account Settings</h1>
+    </div>
+
+    <!-- ── Profile card ──────────────────────────────────────────────────── -->
+    <section class="section card settings-card">
+      <div class="settings-card-header">
+        <h2>Profile</h2>
+        <button id="btn-edit-profile" class="btn-sm">Edit</button>
+        <button id="btn-cancel-profile" class="btn-sm hidden">Cancel</button>
+      </div>
+
+      <!-- View mode -->
+      <div id="profile-view">
+        <div class="profile-view-header">
+          <div class="avatar-wrap" id="view-avatar-wrap">
+            <img id="view-avatar-img" class="avatar-img hidden" src="" alt="Profile photo" />
+            <span id="view-avatar-initials" class="avatar-initials">?</span>
+          </div>
+          <div class="profile-grid" style="flex:1">
+            <div class="profile-item">
+              <span class="profile-item-label">First Name</span>
+              <span class="profile-item-value" id="view-first-name">—</span>
+            </div>
+            <div class="profile-item">
+              <span class="profile-item-label">Last Name</span>
+              <span class="profile-item-value" id="view-last-name">—</span>
+            </div>
+            <div class="profile-item">
+              <span class="profile-item-label">Username</span>
+              <span class="profile-item-value" id="view-username">—</span>
+            </div>
+            <div class="profile-item">
+              <span class="profile-item-label">Email</span>
+              <span class="profile-item-value muted" id="view-email">—</span>
+            </div>
+            <div class="profile-item profile-item-full">
+              <span class="profile-item-label">Country of Residence</span>
+              <span class="profile-item-value" id="view-country">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Edit mode -->
+      <form id="profile-form" class="hidden" novalidate>
+
+        <!-- Avatar picker -->
+        <div class="avatar-edit-row">
+          <div class="avatar-wrap avatar-wrap-lg" id="edit-avatar-wrap">
+            <img id="edit-avatar-img" class="avatar-img hidden" src="" alt="Profile photo" />
+            <span id="edit-avatar-initials" class="avatar-initials">?</span>
+          </div>
+          <div class="avatar-picker-col">
+            <p class="form-label" style="margin-bottom:0.4rem">Choose an avatar</p>
+            <div class="avatar-grid" id="avatar-grid"></div>
+            <button type="button" id="btn-remove-photo" class="btn-sm btn-danger-sm hidden" style="margin-top:0.5rem">Remove Avatar</button>
+            <p id="photo-upload-error" class="error" style="font-size:0.8rem;margin-top:0.25rem"></p>
+          </div>
+        </div>
+
+        <div class="profile-grid" style="margin-top:1rem">
+
+          <div class="field-row">
+            <label class="form-label" for="input-first-name">First Name</label>
+            <input id="input-first-name" class="form-input" type="text" maxlength="50"
+              placeholder="e.g. Alex" autocomplete="given-name" />
+          </div>
+
+          <div class="field-row">
+            <label class="form-label" for="input-last-name">Last Name</label>
+            <input id="input-last-name" class="form-input" type="text" maxlength="50"
+              placeholder="e.g. Smith" autocomplete="family-name" />
+          </div>
+
+          <div class="field-row">
+            <label class="form-label" for="input-username">
+              Username
+              <span class="field-hint">(3–30 letters &amp; digits)</span>
+            </label>
+            <input id="input-username" class="form-input" type="text" maxlength="30"
+              placeholder="e.g. CoolOtter123" autocomplete="username" />
+          </div>
+
+          <div class="field-row">
+            <label class="form-label">Email</label>
+            <span class="form-input settings-email-display muted" id="input-email">—</span>
+          </div>
+
+          <div class="field-row profile-item-full">
+            <label class="form-label" for="input-country">Country of Residence</label>
+            <select id="input-country" class="form-input">
+              <option value="">— Select country —</option>
+            </select>
+          </div>
+
+        </div>
+
+        <p id="profile-form-error" class="error" style="margin-top:0.75rem"></p>
+        <div style="margin-top:1rem;display:flex;gap:0.75rem">
+          <button id="btn-save-profile" type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ── Trade Settings card ───────────────────────────────────────────── -->
+    <section class="section card settings-card" style="margin-top:1rem">
+      <h2 style="margin-bottom:1.25rem">Trade Settings</h2>
+
+      <!-- Require release code -->
+      <div class="trade-setting-row">
+        <div class="trade-setting-info">
+          <span class="trade-setting-label">Require code before releasing</span>
+          <span class="trade-setting-desc">When enabled, a confirmation code must be shown in chat before escrow funds can be released.</span>
+        </div>
+        <label class="toggle-switch" aria-label="Require release code">
+          <input type="checkbox" id="toggle-release-code" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div style="height:1.25rem"></div>
+
+      <!-- Require code for off-chain sends -->
+      <div class="trade-setting-row">
+        <div class="trade-setting-info">
+          <span class="trade-setting-label">Require code for off-chain sends</span>
+          <span class="trade-setting-desc">When enabled, you must enter your confirmation code before sending crypto to another platform user. Adds an extra layer of protection against unauthorised transfers.</span>
+        </div>
+        <label class="toggle-switch" aria-label="Require code for off-chain sends">
+          <input type="checkbox" id="toggle-withdraw-code" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- ── Confirmation Code card ─────────────────────────────────────────── -->
+    <section class="section card settings-card" style="margin-top:1rem">
+      <div class="settings-card-header">
+        <h2>Confirmation Code</h2>
+      </div>
+      <p class="muted" style="margin:.25rem 0 1rem">
+        A 4–6 digit code used to authorise sensitive actions (e.g. off-chain sends).
+        Set a code below to enable this protection.
+      </p>
+      <p id="withdraw-code-status" class="muted" style="font-size:0.85rem;margin-bottom:1rem"></p>
+      <div class="field-row" style="max-width:260px">
+        <label class="form-label" for="input-withdraw-code">
+          New code
+          <span class="field-hint">(4–6 digits)</span>
+        </label>
+        <input id="input-withdraw-code" class="form-input" type="password"
+               inputmode="numeric" maxlength="6" placeholder="e.g. 4821"
+               autocomplete="one-time-code" />
+      </div>
+      <div class="field-row" style="max-width:260px;margin-top:.5rem">
+        <label class="form-label" for="input-withdraw-code-confirm">Confirm code</label>
+        <input id="input-withdraw-code-confirm" class="form-input" type="password"
+               inputmode="numeric" maxlength="6" placeholder="repeat code"
+               autocomplete="one-time-code" />
+      </div>
+      <p id="withdraw-code-error" class="error" style="font-size:0.85rem;margin-top:.25rem"></p>
+      <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
+        <button id="btn-save-withdraw-code" class="btn-primary">Save Code</button>
+        <button id="btn-remove-withdraw-code" class="btn-danger hidden">Remove Code</button>
+      </div>
+    </section>
+
+    <!-- ── Account / Danger zone ─────────────────────────────────────────── -->
+    <section class="section card settings-card" style="margin-top:1rem">
+      <h2>Account</h2>
+      <p class="muted" style="margin-top:0.5rem">Signing out will require you to sign in again on your next visit.</p>
+      <button id="btn-signout-settings" class="btn-danger" style="margin-top:0.75rem">Sign Out</button>
+    </section>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <script type="module" src="/src/pages/settings-page.js"></script>
+</body>
+</html>

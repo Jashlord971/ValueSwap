@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — Gift Card Verifier</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <div class="page-header">
+      <h1>Gift Card Verifier</h1>
+    </div>
+
+    <section class="section card">
+      <p class="muted" style="margin-bottom:1rem">
+        Upload a photo of a gift card to extract the card number and check its history.
+        <strong>This shows if the card has been seen or used on this platform.</strong>
+      </p>
+      <div class="scanner-fields">
+        <input id="card-image-input" type="file" accept="image/*" />
+        <button id="btn-scan-card" class="btn">Scan Card</button>
+      </div>
+      <div id="scan-result" style="margin-top:1rem"></div>
+    </section>
+  </div>
+
+  <script type="module" src="/src/pages/scanner-page.js"></script>
+</body>
+</html>
