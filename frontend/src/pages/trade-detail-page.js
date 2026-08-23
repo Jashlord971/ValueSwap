@@ -212,16 +212,16 @@ async function displayTrade() {
     : 'USD equiv unavailable'
   const cardName   = await resolvePaymentMethodName(t.card)
 
-  // offer_type is stored from the offer owner's perspective.
+  // offer_type is the offer owner's stated intent ("I want to Buy/Sell crypto").
   // Backend role mapping:
-  // - offer_type="buy": creator is buyer, offer_owner is seller
-  // - offer_type="sell": creator is seller, offer_owner is buyer
+  // - offer_type="buy": offer_owner is buyer (wants crypto), trade creator (taker) is seller
+  // - offer_type="sell": offer_owner is seller (holds crypto), trade creator (taker) is buyer
   const offerType = String(t.offer_type || '').toLowerCase()
-  const isBuying = (isCreator && offerType === 'buy') || (!isCreator && offerType === 'sell')
+  const isBuying = (isCreator && offerType === 'sell') || (!isCreator && offerType === 'buy')
 
   const summary = isBuying
     ? `You are buying <strong>${cryptoAmt}</strong> for <strong>${fiatAmt}</strong> via <strong>${escHtml(cardName)}</strong>`
-    : `You are selling <strong>${fiatAmt}</strong> of <strong>${escHtml(cardName)}</strong> for <strong>${cryptoAmt}</strong>`
+    : `You are selling <strong>${cryptoAmt}</strong> for <strong>${fiatAmt}</strong> via <strong>${escHtml(cardName)}</strong>`
 
   const fiatAmtLabeled = cardName && cardName !== '—' ? `${fiatAmt} in ${cardName}` : fiatAmt
   const youSend    = isBuying ? fiatAmtLabeled : cryptoAmt
@@ -274,7 +274,7 @@ async function displayTrade() {
           </div>
           <div style="display:flex;justify-content:space-between;gap:0.75rem;">
             <span style="color: var(--muted);">Crypto sender</span>
-            <strong>${isBuying ? 'You release crypto' : 'Counterparty releases crypto'}</strong>
+            <strong>${isBuying ? 'Counterparty releases crypto' : 'You release crypto'}</strong>
           </div>
           <div style="display:flex;justify-content:space-between;gap:0.75rem;">
             <span style="color: var(--muted);">Fiat side</span>

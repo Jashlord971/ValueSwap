@@ -356,7 +356,10 @@ async function getUsdPrices() {
 }
 
 function marketOfferType() {
-  return selectedSide
+  // selectedSide is the browsing user's intent as a would-be taker: "buy" means
+  // they want to acquire crypto, so they should see offers whose creator is
+  // selling crypto (offer_type="sell"), and vice versa.
+  return selectedSide === 'buy' ? 'sell' : 'buy'
 }
 
 function buildMarketQuery() {

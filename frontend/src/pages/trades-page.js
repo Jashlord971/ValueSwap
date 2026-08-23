@@ -377,6 +377,8 @@ function renderPastTrades(grid, trades) {
 
 function buildPastTradeCard(t) {
   const isCreator = currentUser && t.creator_uid === currentUser.uid
+  const offerType = String(t.offer_type || '').toLowerCase()
+  const isBuying = (isCreator && offerType === 'sell') || (!isCreator && offerType === 'buy')
   const partnerUid = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
@@ -413,7 +415,7 @@ function buildPastTradeCard(t) {
         </div>
         <div class="trade-detail-row">
           <span class="trade-detail-label">Trade Type</span>
-          <span class="trade-detail-value">${escHtml(String(t.offer_type || '—').toUpperCase())}</span>
+          <span class="trade-detail-value">${t.offer_type ? (isBuying ? 'BUY' : 'SELL') : '—'}</span>
         </div>
         <div class="trade-detail-row">
           <span class="trade-detail-label">Fiat</span>
@@ -438,7 +440,10 @@ function buildPastTradeCard(t) {
 function buildTradeCard(t) {
   const isCreator      = currentUser && t.creator_uid === currentUser.uid
   const offerType      = String(t.offer_type || '').toLowerCase()
-  const isSeller       = (isCreator && offerType === 'sell') || (!isCreator && offerType === 'buy')
+  // offer_type is the offer owner's stated intent: "buy" means the offer
+  // owner wants crypto (so the taker/creator holds and sells it); "sell"
+  // means the offer owner holds and sells the crypto. Matches trade-detail-page.js.
+  const isSeller       = (isCreator && offerType === 'buy') || (!isCreator && offerType === 'sell')
   const isBuyer        = !isSeller
   const partnerLabel   = isCreator ? 'Offer Owner' : 'Taker'
   const partnerUid     = isCreator ? t.offer_owner_uid : t.creator_uid

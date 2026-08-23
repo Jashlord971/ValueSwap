@@ -813,25 +813,28 @@ async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {
 }
 
 fn seller_buyer_for_offer(offer: &Offer, taker_uid: &str) -> (String, String) {
+    // "Buy" offer: creator wants crypto, so the taker (who holds it) is the
+    // seller and the creator is the buyer. "Sell" offer: creator already
+    // holds the crypto and is the seller; the taker is the buyer.
     match offer.offer_type {
-        crate::models::OfferType::Buy => (offer.creator_uid.clone(), taker_uid.to_string()),
-        crate::models::OfferType::Sell => (taker_uid.to_string(), offer.creator_uid.clone()),
+        crate::models::OfferType::Buy => (taker_uid.to_string(), offer.creator_uid.clone()),
+        crate::models::OfferType::Sell => (offer.creator_uid.clone(), taker_uid.to_string()),
     }
 }
 
 fn seller_uid_for_trade(trade: &Trade) -> String {
     if trade.offer_type == "buy" {
-        trade.offer_owner_uid.clone()
-    } else {
         trade.creator_uid.clone()
+    } else {
+        trade.offer_owner_uid.clone()
     }
 }
 
 fn buyer_uid_for_trade(trade: &Trade) -> String {
     if trade.offer_type == "buy" {
-        trade.creator_uid.clone()
-    } else {
         trade.offer_owner_uid.clone()
+    } else {
+        trade.creator_uid.clone()
     }
 }
 

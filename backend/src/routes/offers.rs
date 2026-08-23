@@ -251,9 +251,13 @@ fn offer_passes_market_filters(
 }
 
 fn inferred_crypto_releaser_side(offer_type: &OfferType) -> CryptoReleaserSide {
+    // "Buy crypto" means the creator wants to acquire crypto, so the taker
+    // (who holds it) releases it. "Sell crypto" means the creator already
+    // holds the crypto and releases it to the taker. This must match the
+    // "I want to Buy/Sell crypto" labels on the create-offer form.
     match offer_type {
-        OfferType::Buy => CryptoReleaserSide::Maker,
-        OfferType::Sell => CryptoReleaserSide::Taker,
+        OfferType::Buy => CryptoReleaserSide::Taker,
+        OfferType::Sell => CryptoReleaserSide::Maker,
     }
 }
 
@@ -525,7 +529,7 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
     .await?;
 
     if balance_result.should_deactivate {
-        return Err(AppError::BadRequest("Insufficient crypto balance to create this buy offer: minimum amount is not coverable".into()));
+        return Err(AppError::BadRequest("Insufficient crypto balance to create this sell offer: minimum amount is not coverable".into()));
     }
 
     let final_status = OfferStatus::Active;
@@ -585,10 +589,13 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
             }
         }
 
+        // `side` is the browsing user's intent as a would-be taker: "buy" means
+        // they want to acquire crypto, so they should see offers whose creator
+        // is selling crypto (and vice versa) — the inverse of offer_type.
         let side = query.side.as_deref().map(|s| s.trim().to_lowercase());
         let desired_offer_type = match side.as_deref() {
-            Some("buy") => Some(OfferType::Buy),
-            Some("sell") => Some(OfferType::Sell),
+            Some("buy") => Some(OfferType::Sell),
+            Some("sell") => Some(OfferType::Buy),
             _ => None,
         };
         let amount = query.amount.filter(|v| *v > 0.0);
