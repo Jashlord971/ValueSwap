@@ -32,8 +32,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/:id/cancel", post(cancel_trade))
         .route("/:id/mark-paid", post(mark_paid))
         .route("/:id/dispute", post(dispute_trade))
-    .route("/:id/resolve-dispute", post(resolve_dispute))
+        .route("/:id/resolve-dispute", post(resolve_dispute))
         .route("/:id/feedback", post(leave_feedback))
+        .route("/:id/feedback/edit", post(edit_feedback))
 }
 
 async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
@@ -45,6 +46,12 @@ async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
         .filter_map(|v| serde_json::from_value::<Trade>(v).ok())
         .filter(|t| t.creator_uid == ctx.user.uid || t.offer_owner_uid == ctx.user.uid)
         .collect::<Vec<_>>();
+
+    for trade in &mut trades {
+        if apply_effective_trade_status(trade) {
+            db.set(&format!("trades/{}", trade.id), &serde_json::to_value(&trade).unwrap()).await?;
+        }
+    }
 
     trades.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
@@ -76,29 +83,50 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
         return Err(AppError::BadRequest("Cannot trade on your own offer".into()));
     }
     if offer.status != crate::models::OfferStatus::Active {
-        return Err(AppError::BadRequest("Offer is not active".into()));
+        return Err(AppError::BadRequest("Offer is no longer active. Refresh offers and try again.".into()));
+    }
+
+    let requested_coin = req.coin.trim().to_uppercase();
+    let offer_coin = offer.coin.trim().to_uppercase();
+    if requested_coin != offer_coin {
+        return Err(AppError::BadRequest(format!("Trade coin must match offer coin: {}", offer_coin)));
     }
 
     match (offer.min_amount, offer.max_amount) {
         (Some(min), Some(max)) => {
             if req.fiat_amount < min || req.fiat_amount > max {
-                return Err(AppError::BadRequest(format!(
-                    "Trade amount must be within offer range: {:.2} to {:.2} {}",
+                return Err(AppError::BadRequest(format!("Trade amount must be within offer range: {:.2} to {:.2} {}",
                     min, max, offer.currency
                 )));
             }
         }
         _ => {
-            return Err(AppError::BadRequest(
-                "This offer has no valid amount range and cannot be traded".into(),
-            ));
+            return Err(AppError::BadRequest("This offer has no valid amount range and cannot be traded".into()));
         }
+    }
+
+    let coin_price_usd = fetch_coin_usd_price(&ctx.state, &offer_coin).await?;
+    let fiat_to_usd = convert_to_usd(&ctx.state, 1.0, &offer.currency).await?;
+    let escrow_fee_pct = payment_method_escrow_fee_pct(&offer.card);
+    let required_locked = required_locked_crypto_for_fiat(
+        req.fiat_amount,
+        fiat_to_usd,
+        coin_price_usd,
+        offer.profit_pct,
+        escrow_fee_pct,
+    )
+    .ok_or_else(|| AppError::BadRequest("Invalid offer pricing configuration".into()))?;
+
+    if req.crypto_amount + 1e-12 < required_locked {
+        return Err(AppError::BadRequest(format!("Insufficient crypto amount for this fiat value. Required at least {:.8} {}", 
+            required_locked, 
+            offer_coin
+        )));
     }
 
     let (seller_uid, _buyer_uid) = seller_buyer_for_offer(&offer, &ctx.user.uid);
 
-    // Lock the crypto holder's funds into escrow as soon as trade opens.
-    lock_escrow(&db, &seller_uid, &req.coin.to_lowercase(), req.crypto_amount).await?;
+    lock_escrow(&db, &seller_uid, &offer_coin.to_lowercase(), req.crypto_amount).await?;
 
     let fee_pct = crate::models::payment_methods()
         .into_iter()
@@ -139,6 +167,8 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
         offer_owner_username: None,
         creator_avatar_number: None,
         offer_owner_avatar_number: None,
+        creator_last_active_at: None,
+        offer_owner_last_active_at: None,
     };
 
     db.set(
@@ -161,6 +191,9 @@ async fn get_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
     }
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
     resolve_trade_usernames(&mut trade, &db).await;
     Ok(Json(trade))
 }
@@ -173,6 +206,9 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>,
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
 
     if seller_uid_for_trade(&trade) != ctx.user.uid {
         return Err(AppError::Forbidden("Only the seller can complete this trade".into()));
@@ -180,30 +216,61 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>,
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
     }
-    if !matches!(trade.status, TradeStatus::Open | TradeStatus::Paid) {
-        return Err(AppError::BadRequest("Trade cannot be completed in its current state".into()));
+    if !matches!(trade.status, TradeStatus::Paid) {
+        return Err(AppError::BadRequest("Trade must be marked as paid before completion".into()));
     }
-    if unix_now() > trade.expires_at && matches!(trade.status, TradeStatus::Open) {
-        trade.status = TradeStatus::Expired;
-        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
-        return Err(AppError::BadRequest("Trade has expired".into()));
+    if trade.creator_uid == trade.offer_owner_uid {
+        return Err(AppError::BadRequest("Invalid trade participants".into()));
+    }
+    if !trade.escrow_locked_amount.is_finite() || trade.escrow_locked_amount <= 0.0 {
+        return Err(AppError::BadRequest("Invalid escrow amount for completion".into()));
+    }
+    if !trade.escrow_fee_amount.is_finite() || trade.escrow_fee_amount < 0.0 || trade.escrow_fee_amount > trade.escrow_locked_amount {
+        return Err(AppError::BadRequest("Invalid escrow fee state for completion".into()));
+    }
+    if trade.coin.trim().is_empty() {
+        return Err(AppError::BadRequest("Invalid trade coin for completion".into()));
+    }
+    if trade.escrow_released {
+        return Err(AppError::BadRequest("Trade escrow state is invalid for completion".into()));
     }
 
-    if !trade.escrow_released {
-        release_escrow_to_user(
-            &db,
-            &seller_uid_for_trade(&trade),
-            &buyer_uid_for_trade(&trade),
-            &trade.coin.to_lowercase(),
-            trade.escrow_locked_amount,
-            trade.escrow_fee_amount,
-        )
-        .await?;
-        trade.escrow_released = true;
-    }
+    ensure_escrow_available_for_completion(
+        &db,
+        &seller_uid_for_trade(&trade),
+        &trade.coin,
+        trade.escrow_locked_amount,
+    )
+    .await?;
+
+    release_escrow_to_user(
+        &db,
+        &seller_uid_for_trade(&trade),
+        &buyer_uid_for_trade(&trade),
+        &trade.coin.to_lowercase(),
+        trade.escrow_locked_amount,
+        trade.escrow_fee_amount,
+    )
+    .await?;
+    trade.escrow_released = true;
 
     trade.status = TradeStatus::Completed;
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+
+    let rebalance_state = ctx.state.clone();
+    let seller_uid = seller_uid_for_trade(&trade);
+    let buyer_uid = buyer_uid_for_trade(&trade);
+    tokio::spawn(async move {
+        if let Err(e) = super::offers::rebalance_active_offers_for_user(rebalance_state.clone(), &seller_uid).await {
+            tracing::warn!("complete_trade rebalance failed for seller {}: {}", seller_uid, e);
+        }
+        if buyer_uid != seller_uid {
+            if let Err(e) = super::offers::rebalance_active_offers_for_user(rebalance_state, &buyer_uid).await {
+                tracing::warn!("complete_trade rebalance failed for buyer {}: {}", buyer_uid, e);
+            }
+        }
+    });
+
     Ok(Json(trade))
 }
 
@@ -215,6 +282,9 @@ async fn cancel_trade(ctx: Ctx, Path(id): Path<String>, body: Option<Json<Cancel
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
 
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
@@ -266,9 +336,7 @@ pub async fn expire_stale_trades(state: Arc<AppState>) {
 
     for val in docs {
         if let Ok(mut trade) = serde_json::from_value::<Trade>(val) {
-            if matches!(trade.status, TradeStatus::Pending | TradeStatus::Open)
-                && now > trade.expires_at
-            {
+            if matches!(trade.status, TradeStatus::Pending | TradeStatus::Open) && now > trade.expires_at {
                 if !trade.escrow_released {
                     let _ = release_escrow_back(
                         &db,
@@ -279,10 +347,7 @@ pub async fn expire_stale_trades(state: Arc<AppState>) {
                     trade.escrow_released = true;
                 }
                 trade.status = TradeStatus::Expired;
-                let _ = db.set(
-                    &format!("trades/{}", trade.id),
-                    &serde_json::to_value(&trade).unwrap(),
-                ).await;
+                let _ = db.set(&format!("trades/{}", trade.id), &serde_json::to_value(&trade).unwrap()).await;
                 expired_count += 1;
             }
         }
@@ -300,8 +365,15 @@ async fn mark_paid(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
+
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
+    }
+    if buyer_uid_for_trade(&trade) != ctx.user.uid {
+        return Err(AppError::Forbidden("Only the buyer can mark this trade as paid".into()));
     }
     if !matches!(trade.status, TradeStatus::Open) {
         return Err(AppError::BadRequest("Trade must be open to mark as paid".into()));
@@ -318,6 +390,9 @@ async fn dispute_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, 
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
 
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
@@ -339,6 +414,9 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
 
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
@@ -351,13 +429,8 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
     }
 
     if !trade.escrow_released {
-        release_escrow_to_user(
-            &db,
-            &seller_uid_for_trade(&trade),
-            &req.winner_uid,
-            &trade.coin.to_lowercase(),
-            trade.escrow_locked_amount,
-            trade.escrow_fee_amount,
+        release_escrow_to_user(&db, &seller_uid_for_trade(&trade), &req.winner_uid,
+            &trade.coin.to_lowercase(), trade.escrow_locked_amount, trade.escrow_fee_amount
         )
         .await?;
         trade.escrow_released = true;
@@ -377,6 +450,10 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
+
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
     }
@@ -385,6 +462,20 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
     }
     if trade.feedback.iter().any(|entry| entry.from_uid == ctx.user.uid) {
         return Err(AppError::BadRequest("You have already left feedback for this trade".into()));
+    }
+
+    if let Some(existing_trade_id) = find_existing_feedback_trade_for_offer(
+        &db,
+        &trade.offer_id,
+        &ctx.user.uid,
+        Some(&trade.id),
+    )
+    .await?
+    {
+        return Err(AppError::BadRequest(format!(
+            "You already left feedback for this offer on trade '{}'. Edit your existing feedback instead.",
+            existing_trade_id
+        )));
     }
 
     let comment = sanitize_feedback_comment(&req.comment)?;
@@ -397,36 +488,117 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
 
     trade.feedback.push(TradeFeedback {
         from_uid: ctx.user.uid,
-        to_uid,
+        to_uid: to_uid.clone(),
         positive: req.positive,
         comment,
         created_at: unix_now(),
     });
 
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
-    increment_feedback_totals(&db, &trade.feedback.last().unwrap().to_uid, req.positive).await?;
+    apply_feedback_delta(&db, &to_uid, req.positive, 1).await?;
     resolve_trade_usernames(&mut trade, &db).await;
     Ok(Json(trade))
 }
 
-async fn increment_feedback_totals(
-    db: &RtdbClient<'_>,
-    uid: &str,
-    positive: bool,
-) -> Result<(), AppError> {
+async fn edit_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTradeFeedbackRequest>) -> Result<Json<Trade>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let val = db
+        .get(&format!("trades/{}", id))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
+    let mut trade = serde_json::from_value::<Trade>(val)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if apply_effective_trade_status(&mut trade) {
+        db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    }
+
+    if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
+        return Err(AppError::Forbidden("Not a party to this trade".into()));
+    }
+    if !matches!(trade.status, TradeStatus::Completed) {
+        return Err(AppError::BadRequest("Feedback is only available for completed trades".into()));
+    }
+
+    let comment = sanitize_feedback_comment(&req.comment)?;
+
+    let Some(entry) = trade.feedback.iter_mut()
+        .find(|entry| entry.from_uid == ctx.user.uid) else {
+        if let Some(existing_trade_id) = find_existing_feedback_trade_for_offer(
+            &db,
+            &trade.offer_id,
+            &ctx.user.uid,
+            Some(&trade.id),
+        )
+        .await?
+        {
+            return Err(AppError::BadRequest(format!(
+                "You already left feedback for this offer on trade '{}'. Edit that feedback entry instead.",
+                existing_trade_id
+            )));
+        }
+        return Err(AppError::BadRequest("You have not left feedback for this trade yet".into()));
+    };
+
+    let old_positive = entry.positive;
+    let target_uid = entry.to_uid.clone();
+    entry.positive = req.positive;
+    entry.comment = comment;
+
+    if old_positive != req.positive {
+        apply_feedback_delta(&db, &target_uid, old_positive, -1).await?;
+        apply_feedback_delta(&db, &target_uid, req.positive, 1).await?;
+    }
+
+    db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+    resolve_trade_usernames(&mut trade, &db).await;
+    Ok(Json(trade))
+}
+
+async fn find_existing_feedback_trade_for_offer(db: &RtdbClient<'_>, offer_id: &str, from_uid: &str, exclude_trade_id: Option<&str>) 
+    -> Result<Option<String>, AppError> {
+    let docs = db.get_collection("trades").await?;
+
+    for val in docs {
+        let Ok(trade) = serde_json::from_value::<Trade>(val) else {
+            continue;
+        };
+
+        if trade.offer_id != offer_id {
+            continue;
+        }
+        if exclude_trade_id.is_some_and(|excluded| excluded == trade.id) {
+            continue;
+        }
+        if trade.feedback.iter().any(|entry| entry.from_uid == from_uid) {
+            return Ok(Some(trade.id));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn apply_feedback_delta(db: &RtdbClient<'_>, uid: &str, positive: bool, delta: i8) -> Result<(), AppError> {
+    if delta == 0 {
+        return Ok(());
+    }
+
     let path = format!("users/{}", uid);
     let Some(val) = db.get(&path).await? else {
-        tracing::warn!("leave_feedback: user profile missing for uid {}", uid);
+        tracing::warn!("feedback_delta: user profile missing for uid {}", uid);
         return Ok(());
     };
 
     let mut profile = serde_json::from_value::<UserProfile>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    if positive {
-        profile.feedback_pos = profile.feedback_pos.saturating_add(1);
+    if positive && delta > 0 {
+        profile.feedback_pos = profile.feedback_pos.saturating_add(delta as u64);
+    } else if positive && delta < 0 {
+        profile.feedback_pos = profile.feedback_pos.saturating_sub((-delta) as u64);
+    } else if !positive && delta > 0 {
+        profile.feedback_neg = profile.feedback_neg.saturating_add(delta as u64);
     } else {
-        profile.feedback_neg = profile.feedback_neg.saturating_add(1);
+        profile.feedback_neg = profile.feedback_neg.saturating_sub((-delta) as u64);
     }
 
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
@@ -450,11 +622,50 @@ fn sanitize_feedback_comment(input: &str) -> Result<String, AppError> {
         .to_string();
 
     let len = normalized.chars().count();
-    if len < 5 || len > 500 {
-        return Err(AppError::BadRequest("Feedback text must be between 5 and 500 characters".into()));
+    if len < 5 || len > 200 {
+        return Err(AppError::BadRequest("Feedback text must be between 5 and 200 characters".into()));
+    }
+
+    if contains_prohibited_feedback_content(&normalized) {
+        return Err(AppError::BadRequest("Feedback contains prohibited language (obscene, sexual, vulgar, or harassing content).".into()));
     }
 
     Ok(normalized)
+}
+
+fn contains_prohibited_feedback_content(input: &str) -> bool {
+    let lowered = input.to_lowercase();
+    let normalized = lowered
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>();
+
+    const BANNED_TERMS: &[&str] = &[
+        "fuck",
+        "shit",
+        "bitch",
+        "asshole",
+        "dick",
+        "pussy",
+        "slut",
+        "whore",
+        "sex",
+        "sexy",
+        "nude",
+        "porn",
+        "horny",
+        "idiot",
+        "moron",
+        "stupid",
+        "loser",
+        "kys",
+    ];
+
+    if BANNED_TERMS.iter().any(|term| normalized.contains(term)) {
+        return true;
+    }
+
+    normalized.contains("kill yourself")
 }
 
 async fn read_f64_path(db: &RtdbClient<'_>, path: &str) -> Result<f64, AppError> {
@@ -504,14 +715,8 @@ async fn release_escrow_back(db: &RtdbClient<'_>, uid: &str, coin: &str, amount:
     db.multi_path_update(updates).await
 }
 
-async fn release_escrow_to_user(
-    db: &RtdbClient<'_>,
-    seller_uid: &str,
-    winner_uid: &str,
-    coin: &str,
-    amount: f64,
-    fee: f64,
-) -> Result<(), AppError> {
+async fn release_escrow_to_user(db: &RtdbClient<'_>, seller_uid: &str, winner_uid: &str, coin: &str,
+    amount: f64, fee: f64) -> Result<(), AppError> {
     let coin = coin.to_lowercase();
     let esc_path = format!("escrow_balances/{}/{}", seller_uid, coin);
     let win_bal_path = format!("balances/{}/{}", winner_uid, coin);
@@ -534,6 +739,22 @@ async fn release_escrow_to_user(
     db.multi_path_update(updates).await
 }
 
+async fn ensure_escrow_available_for_completion(db: &RtdbClient<'_>, seller_uid: &str, coin: &str, required_amount: f64) -> Result<(), AppError> {
+    let coin = coin.trim().to_lowercase();
+    let esc_path = format!("escrow_balances/{}/{}", seller_uid, coin);
+    let escrowed = read_f64_path(db, &esc_path).await?;
+    if escrowed + 1e-12 < required_amount {
+        return Err(AppError::BadRequest(format!(
+            "Cannot complete trade: escrow balance is insufficient (have {:.8} {}, need {:.8} {})",
+            escrowed,
+            coin.to_uppercase(),
+            required_amount,
+            coin.to_uppercase()
+        )));
+    }
+    Ok(())
+}
+
 fn unix_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -542,10 +763,21 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn apply_effective_trade_status(trade: &mut Trade) -> bool {
+    if matches!(trade.status, TradeStatus::Open | TradeStatus::Pending)
+        && trade.expires_at > 0
+        && unix_now() >= trade.expires_at
+    {
+        trade.status = TradeStatus::Expired;
+        return true;
+    }
+    false
+}
+
 async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {
-    async fn fetch_user_meta(db: &RtdbClient<'_>, uid: &str) -> (Option<String>, Option<u8>) {
+    async fn fetch_user_meta(db: &RtdbClient<'_>, uid: &str) -> (Option<String>, Option<u8>, Option<u64>) {
         let Some(v) = db.get(&format!("users/{}", uid)).await.ok().flatten() else {
-            return (None, None);
+            return (None, None, None);
         };
 
         let username = v
@@ -561,16 +793,23 @@ async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {
             .and_then(|n| u8::try_from(n).ok())
             .filter(|n| (1..=21).contains(n));
 
-        (username, avatar_number)
+        let last_active_at = v
+            .get("last_active_at")
+            .and_then(|x| x.as_u64())
+            .filter(|ts| *ts > 0);
+
+        (username, avatar_number, last_active_at)
     }
 
-    let (creator_username, creator_avatar_number) = fetch_user_meta(db, &trade.creator_uid).await;
-    let (offer_owner_username, offer_owner_avatar_number) = fetch_user_meta(db, &trade.offer_owner_uid).await;
+    let (creator_username, creator_avatar_number, creator_last_active_at) = fetch_user_meta(db, &trade.creator_uid).await;
+    let (offer_owner_username, offer_owner_avatar_number, offer_owner_last_active_at) = fetch_user_meta(db, &trade.offer_owner_uid).await;
 
     trade.creator_username = creator_username;
     trade.creator_avatar_number = creator_avatar_number;
     trade.offer_owner_username = offer_owner_username;
     trade.offer_owner_avatar_number = offer_owner_avatar_number;
+    trade.creator_last_active_at = creator_last_active_at;
+    trade.offer_owner_last_active_at = offer_owner_last_active_at;
 }
 
 fn seller_buyer_for_offer(offer: &Offer, taker_uid: &str) -> (String, String) {
@@ -594,4 +833,123 @@ fn buyer_uid_for_trade(trade: &Trade) -> String {
     } else {
         trade.offer_owner_uid.clone()
     }
+}
+
+fn payment_method_escrow_fee_pct(card: &str) -> f64 {
+    let lower = card.trim().to_lowercase();
+    crate::models::payment_methods()
+        .into_iter()
+        .find(|pm| pm.id == lower || pm.name.to_lowercase() == lower)
+        .map(|pm| pm.escrow_fee_pct)
+        .unwrap_or(1.0)
+}
+
+fn required_locked_crypto_for_fiat(fiat_amount: f64, fiat_to_usd: f64, coin_price_usd: f64, profit_pct: f64, escrow_fee_pct: f64) -> Option<f64> {
+    if fiat_amount <= 0.0 || fiat_to_usd <= 0.0 || coin_price_usd <= 0.0 {
+        return None;
+    }
+
+    let multiplier = 1.0 + (profit_pct / 100.0);
+    if multiplier <= 0.0 {
+        return None;
+    }
+
+    let target_crypto_value_usd = (fiat_amount * fiat_to_usd) / multiplier;
+    let target_net_crypto = target_crypto_value_usd / coin_price_usd;
+    if !target_net_crypto.is_finite() || target_net_crypto <= 0.0 {
+        return None;
+    }
+
+    let escrow_rate = (escrow_fee_pct / 100.0).clamp(0.0, 0.95);
+    let locked = target_net_crypto / (1.0 - escrow_rate);
+    if locked.is_finite() && locked > 0.0 {
+        Some(locked)
+    } else {
+        None
+    }
+}
+
+async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppError> {
+    let coin = coin.trim().to_uppercase();
+    if coin == "USDT" || coin == "USDC" {
+        return Ok(1.0);
+    }
+
+    let pair = match coin.as_str() {
+        "BTC" => "XXBTZUSD",
+        "ETH" => "XETHZUSD",
+        "TRX" => "TRXUSD",
+        _ => {
+            return Err(AppError::BadRequest(format!("Unsupported coin for pricing: {}", coin)));
+        }
+    };
+
+    let url = format!("https://api.kraken.com/0/public/Ticker?pair={}", pair);
+    let resp: serde_json::Value = state
+        .http_client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Price request failed: {}", e)))?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Price parse failed: {}", e)))?;
+
+    let result = resp["result"]
+        .as_object()
+        .ok_or_else(|| AppError::Internal("Price result missing".into()))?;
+
+    let entry = result
+        .get(pair)
+        .or_else(|| {
+            result
+                .iter()
+                .find(|(k, _)| k.contains(pair) || pair.contains(k.as_str()))
+                .map(|(_, v)| v)
+        })
+        .ok_or_else(|| AppError::Internal("Price pair not found".into()))?;
+
+    let price = entry["c"][0]
+        .as_str()
+        .unwrap_or("0")
+        .parse::<f64>()
+        .unwrap_or(0.0);
+
+    if price <= 0.0 {
+        return Err(AppError::Internal("Invalid USD price from provider".into()));
+    }
+    Ok(price)
+}
+
+async fn convert_to_usd(state: &AppState, amount: f64, currency: &str) -> Result<f64, AppError> {
+    let currency = currency.trim().to_uppercase();
+    if currency == "USD" {
+        return Ok(amount);
+    }
+
+    let url = format!("https://open.er-api.com/v6/latest/{}", currency);
+    let resp: serde_json::Value = state
+        .http_client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("FX request failed: {}", e)))?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("FX parse failed: {}", e)))?;
+
+    let result = resp["result"].as_str().unwrap_or("");
+    if !result.is_empty() && result != "success" {
+        return Err(AppError::Internal(format!("FX provider returned non-success result: {}", result)));
+    }
+
+    let rate = resp["rates"]["USD"]
+        .as_f64()
+        .ok_or_else(|| AppError::Internal("USD rate not found in FX response".into()))?;
+
+    if rate <= 0.0 {
+        return Err(AppError::Internal("Invalid FX exchange rate".into()));
+    }
+
+    Ok(amount * rate)
 }

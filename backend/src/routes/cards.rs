@@ -30,7 +30,6 @@ async fn register_card(State(state): State<Arc<AppState>>, Extension(user): Exte
 
     let hash = sha256_hex(raw);
 
-    // Detect reuse — scan cards collection and filter by hash
     let db = RtdbClient::new(&state, &user.id_token);
     let all_cards = db.get_collection("cards").await?;
     if all_cards.iter().any(|v| v.get("hash").and_then(|h| h.as_str()) == Some(&hash)) {

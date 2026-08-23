@@ -105,9 +105,6 @@ export const withdraw          = (coin, to_address, amount) => request('POST', '
 export const smartSend         = (to, coin, amount)         => request('POST', '/wallet/smart-send',   { to, coin, amount })
 export const claimDeposits     = ()                          => request('POST', '/wallet/claim-deposits')
 
-// ── Users ────────────────────────────────────────────────────────────────
-
-/** Creates user profile on first login; returns existing profile on subsequent calls. */
 export const upsertUser       = ()       => cached('profile', TTL.profile, async () => {
   const profile = await request('POST', '/users/me')
   await ensureWalletBootstrapped()
@@ -130,6 +127,7 @@ export const cancelTrade   = (id, reason) => request('POST', `/trades/${id}/canc
 export const markTradePaid = (id)    => request('POST', `/trades/${id}/mark-paid`).then(r  => { cacheInvalidate('trades'); return r })
 export const disputeTrade  = (id)    => request('POST', `/trades/${id}/dispute`).then(r    => { cacheInvalidate('trades'); return r })
 export const leaveTradeFeedback = (id, positive, comment) => request('POST', `/trades/${id}/feedback`, { positive, comment }).then(r => { cacheInvalidate('trades'); return r })
+export const editTradeFeedback  = (id, positive, comment) => request('POST', `/trades/${id}/feedback/edit`, { positive, comment }).then(r => { cacheInvalidate('trades'); return r })
 
 // ── Offers ────────────────────────────────────────────────────────────────────
 
@@ -179,25 +177,16 @@ export async function getCombinedUsdBalance() {
   return Number.isFinite(total) ? total : 0
 }
 
-// ── Swaps ─────────────────────────────────────────────────────────────────────
-
-export const listSwapOffers = (query = {}) => {
-  const params = new URLSearchParams()
-  Object.entries(query).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && String(v).length) params.set(k, String(v))
-  })
-  const suffix = params.toString() ? `?${params.toString()}` : ''
-  return request('GET', `/swaps${suffix}`)
-}
-export const createSwapOffer = (data) => request('POST', '/swaps', data)
-export const acceptSwapOffer = (id, take_from_amount) =>
-  request('POST', `/swaps/${id}/accept`, { take_from_amount })
-export const cancelSwapOffer = (id) => request('DELETE', `/swaps/${id}`)
-
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
 export const getMessages = (tradeId) =>
   request('GET', `/chat/${tradeId}/messages`)
+
+export const getChatSync = (tradeId, since = 0, pingPresence = false) =>
+  request(
+    'GET',
+    `/chat/${tradeId}/sync?since=${encodeURIComponent(String(since || 0))}&ping_presence=${pingPresence ? 'true' : 'false'}`
+  )
 
 export const sendMessage = (tradeId, text, imageUrl) =>
   request('POST', `/chat/${tradeId}/messages`, {
@@ -205,8 +194,11 @@ export const sendMessage = (tradeId, text, imageUrl) =>
     image_url: imageUrl || null,
   })
 
-export const getChatReadStatuses = () =>
-  request('GET', '/chat/read-statuses')
+export const getChatPartnerReceiptStatus = (tradeId) =>
+  request('GET', `/chat/${tradeId}/receipt-status`)
+
+export const markChatDelivered = (tradeId) =>
+  request('POST', `/chat/${tradeId}/mark-delivered`)
 
 export const markChatRead = (tradeId) =>
   request('POST', `/chat/${tradeId}/mark-read`)

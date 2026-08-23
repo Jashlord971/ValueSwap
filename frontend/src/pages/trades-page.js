@@ -2,10 +2,11 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, listTrades, completeTrade, cancelTrade } from '../api.js'
+import { upsertUser, listTrades, completeTrade, cancelTrade, listPaymentMethods } from '../api.js'
 import { showAlert, showConfirm } from '../modal.js'
 import { cacheGet, cacheInvalidate } from '../cache.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
@@ -21,6 +22,7 @@ let activeTrades = []
 let pastTrades = []
 let countdownTimer = null
 let pastFiltersBound = false
+let paymentMethodNameMap = null
 let appliedPastFilters = {
   coin: new Set(),
   type: new Set(),
@@ -54,6 +56,7 @@ onAuthChange(async (user) => {
   void refreshNavCombinedBalance()
 
   bindPastFiltersUi()
+  await ensurePaymentMethodNameMap()
   await loadTradesOverview()
 
   // Auto-redirect to trade detail if ?trade=<id> is in the URL
@@ -91,8 +94,37 @@ async function loadTradesOverview() {
   }
 }
 
+async function ensurePaymentMethodNameMap() {
+  if (paymentMethodNameMap) return paymentMethodNameMap
+  try {
+    const methods = await listPaymentMethods()
+    paymentMethodNameMap = new Map(
+      (methods || []).map((method) => [String(method.id || '').toLowerCase(), method.name || method.id || ''])
+    )
+  } catch {
+    paymentMethodNameMap = new Map()
+  }
+  return paymentMethodNameMap
+}
+
+function prettifyPaymentMethodId(raw) {
+  return String(raw || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+function paymentMethodDisplayName(raw) {
+  const id = String(raw || '').trim()
+  if (!id) return '—'
+  return paymentMethodNameMap?.get(id.toLowerCase()) || prettifyPaymentMethodId(id)
+}
+
 function consumeTrades(trades) {
-  allTrades = Array.isArray(trades) ? trades : []
+  allTrades = Array.isArray(trades)
+    ? Array.from(new Map(trades.filter((trade) => trade?.id).map((trade) => [trade.id, trade])).values())
+    : []
   activeTrades = allTrades.filter(t => !['completed', 'cancelled', 'expired'].includes(String(t.status || '').toLowerCase()))
   pastTrades = allTrades.filter(t => ['completed', 'cancelled', 'expired'].includes(String(t.status || '').toLowerCase()))
   refreshPastFilterOptions()
@@ -117,9 +149,14 @@ function renderActiveTrades(grid, trades) {
 
   grid.querySelectorAll('.btn-complete-trade').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!await showConfirm('Mark this trade as completed?')) return
+      const tradeId = btn.dataset.id
+      const trade = trades.find((entry) => String(entry.id) === String(tradeId))
+      const confirmMessage = String(trade?.status || '').toLowerCase() === 'paid'
+        ? 'Mark this trade as completed? This confirms you have received payment.'
+        : 'Your trade counterparty has not marked this trade as paid yet. Are you still sure you want to release and complete this trade?'
+      if (!await showConfirm(confirmMessage)) return
       btn.disabled = true
-      try { await completeTrade(btn.dataset.id); await loadTradesOverview() }
+      try { await completeTrade(tradeId); await loadTradesOverview() }
       catch (e) { showAlert(e.message); btn.disabled = false }
     })
   })
@@ -343,6 +380,8 @@ function buildPastTradeCard(t) {
   const partnerUid = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
+  const partnerLastActiveAt = Number(isCreator ? t.offer_owner_last_active_at : t.creator_last_active_at || 0)
+  const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerDisplay = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
 
@@ -356,7 +395,10 @@ function buildPastTradeCard(t) {
     <div class="trade-card trade-card-past" data-id="${escHtml(t.id)}">
       <div class="trade-card-header">
         <div class="trade-partner">
-          <span class="trade-partner-avatar"><img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" /></span>
+          <span class="trade-partner-avatar avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+            <img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+            <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
+          </span>
           <div>
             <span class="trade-partner-label">Partner</span>
             <span class="trade-partner-id">${escHtml(partnerDisplay)}</span>
@@ -367,7 +409,7 @@ function buildPastTradeCard(t) {
       <div class="trade-card-body">
         <div class="trade-detail-row">
           <span class="trade-detail-label">Payment Method</span>
-          <span class="trade-detail-value">${escHtml(t.card || '—')}</span>
+          <span class="trade-detail-value">${escHtml(paymentMethodDisplayName(t.card))}</span>
         </div>
         <div class="trade-detail-row">
           <span class="trade-detail-label">Trade Type</span>
@@ -395,14 +437,19 @@ function buildPastTradeCard(t) {
 
 function buildTradeCard(t) {
   const isCreator      = currentUser && t.creator_uid === currentUser.uid
+  const offerType      = String(t.offer_type || '').toLowerCase()
+  const isSeller       = (isCreator && offerType === 'sell') || (!isCreator && offerType === 'buy')
+  const isBuyer        = !isSeller
   const partnerLabel   = isCreator ? 'Offer Owner' : 'Taker'
   const partnerUid     = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName    = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
+  const partnerLastActiveAt = Number(isCreator ? t.offer_owner_last_active_at : t.creator_last_active_at || 0)
+  const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerShort   = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
 
-  const offerName    = t.card || '—'
+  const offerName    = paymentMethodDisplayName(t.card)
   const currency     = t.currency || ''
   const coin         = t.coin || ''
   const fiatAmt      = t.fiat_amount != null ? `${currency} ${Number(t.fiat_amount).toFixed(2)}` : '—'
@@ -413,12 +460,27 @@ function buildTradeCard(t) {
   const isExpiring   = statusLower === 'open' || statusLower === 'pending'
   const timeLeft     = isExpiring ? timeLeftStr(t.expires_at) : 'No expiry after paid'
   const isCritical   = isExpiring && t.expires_at && (t.expires_at - nowSecs()) < 300
+  const canComplete  = isSeller && (statusLower === 'open' || statusLower === 'paid')
+  const canCancel    = statusLower === 'open' || statusLower === 'paid'
+
+  const actionButtons = [
+    `<button class="btn-sm btn-open-chat" data-id="${t.id}">Open Chat</button>`,
+  ]
+  if (canComplete) {
+    actionButtons.push(`<button class="btn-sm btn-complete-trade" data-id="${t.id}">Complete</button>`)
+  }
+  if (canCancel) {
+    actionButtons.push(`<button class="btn-sm btn-danger btn-cancel-trade" data-id="${t.id}">Cancel</button>`)
+  }
 
   return `
     <div class="trade-card ${isCritical ? 'trade-card-critical' : ''}" data-id="${t.id}">
       <div class="trade-card-header">
         <div class="trade-partner">
-          <span class="trade-partner-avatar"><img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" /></span>
+          <span class="trade-partner-avatar avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+            <img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+            <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
+          </span>
           <div>
             <span class="trade-partner-label">${partnerLabel}</span>
             <span class="trade-partner-id" title="${escHtml(partnerUid)}">${escHtml(partnerShort)}</span>
@@ -433,12 +495,12 @@ function buildTradeCard(t) {
           <span class="trade-detail-value">${escHtml(offerName)}</span>
         </div>
         <div class="trade-detail-row">
-          <span class="trade-detail-label">You ${isCreator ? 'send' : 'receive'}</span>
-          <span class="trade-detail-value trade-fiat">${fiatAmt}</span>
+          <span class="trade-detail-label">You send</span>
+          <span class="trade-detail-value trade-fiat">${isBuyer ? fiatAmt : cryptoAmt}</span>
         </div>
         <div class="trade-detail-row">
-          <span class="trade-detail-label">You ${isCreator ? 'receive' : 'send'}</span>
-          <span class="trade-detail-value trade-crypto">${cryptoAmt}</span>
+          <span class="trade-detail-label">You receive</span>
+          <span class="trade-detail-value trade-crypto">${isBuyer ? cryptoAmt : fiatAmt}</span>
         </div>
         <div class="trade-detail-row">
           <span class="trade-detail-label">${isExpiring ? 'Time Remaining' : 'Trade Timer'}</span>
@@ -448,9 +510,7 @@ function buildTradeCard(t) {
       </div>
 
       <div class="trade-card-actions">
-        <button class="btn-sm btn-open-chat" data-id="${t.id}">Open Chat</button>
-        <button class="btn-sm btn-complete-trade" data-id="${t.id}">Complete</button>
-        <button class="btn-sm btn-danger btn-cancel-trade" data-id="${t.id}">Cancel</button>
+        ${actionButtons.join('')}
       </div>
     </div>
   `

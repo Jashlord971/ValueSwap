@@ -5,6 +5,8 @@ import { initAuth, onAuthChange, logOut } from '../auth.js'
 import { upsertUser, listOffers, listCurrencies, listPaymentMethods, getUserProfile } from '../api.js'
 import { initChat } from '../chat.js'
 import { avatarPathFromNumber, avatarPathFromProfile } from '../avatar.js'
+import { COIN_LOGOS } from '../coin-logos.js'
+import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
@@ -16,12 +18,13 @@ let allOffers = []
 let paymentMethods = []
 const profileCache = new Map()
 let selectedSide = 'buy'
-let selectedCoin = 'BTC'
+let selectedCoin = ''
 let selectedCurrency = ''
 let selectedPaymentMethod = ''
 let selectedSort = 'reputation'
 let usdPrices = null
 let offersRefreshTimer = null
+let marketPollTimer = null
 
 const COIN_TO_GECKO = {
   BTC: 'bitcoin',
@@ -39,8 +42,14 @@ onAuthChange(async (user) => {
 
   renderNav(user, profile)
   bindFilters()
+  setCoinSelection('')
   await loadMeta()
   await loadOffers(buildMarketQuery())
+
+  if (marketPollTimer) clearInterval(marketPollTimer)
+  marketPollTimer = setInterval(() => {
+    void loadOffers(buildMarketQuery())
+  }, 20000)
 })
 
 function renderNav(user, profile) {
@@ -134,7 +143,7 @@ function resetFilters() {
   selectedCurrency = ''
   selectedPaymentMethod = ''
   selectedSort = 'reputation'
-  setCoinSelection('BTC')
+  setCoinSelection('')
   document.getElementById('p2p-amount').value = ''
   setCurrencySelection('')
   setPmSelection('')
@@ -193,7 +202,7 @@ function setCoinSelection(value) {
     li.style.display = ''
   })
   if (searchInput) searchInput.value = ''
-  label.textContent = value || 'All coins'
+  label.textContent = value || 'All crypto'
 }
 
 function bindCurrencyDropdown() {
@@ -347,7 +356,7 @@ async function getUsdPrices() {
 }
 
 function marketOfferType() {
-  return selectedSide === 'buy' ? 'sell' : 'buy'
+  return selectedSide
 }
 
 function buildMarketQuery() {
@@ -405,8 +414,9 @@ function applyFilters() {
 function updateHero(offers) {
   const title = document.getElementById('p2p-hero-title')
   const action = selectedSide === 'buy' ? 'Buy' : 'Sell'
+  const coinLabel = selectedCoin || 'crypto'
   const pmLabel = selectedPaymentMethod ? getPaymentMethodName(selectedPaymentMethod) : 'popular payment methods'
-  title.textContent = `${action} ${selectedCoin} with ${pmLabel}`
+  title.textContent = `${action} ${coinLabel} with ${pmLabel}`
 }
 
 function renderOffers(offers) {
@@ -426,6 +436,8 @@ function renderOfferCard(offer) {
   const profile = profileCache.get(offer.creator_uid)
   const username = profile?.username || shortUid(offer.creator_uid)
   const avatarPath = avatarPathFromNumber(profile?.avatar_number || 1)
+  const creatorLastActiveAt = Number(offer?.creator_last_active_at || profile?.last_active_at || 0)
+  const presence = getPresenceBadgeState(creatorLastActiveAt)
   const feedbackPos = profile?.feedback_pos || 0
   const feedbackNeg = profile?.feedback_neg || 0
   const totalFeedback = feedbackPos + feedbackNeg
@@ -433,17 +445,32 @@ function renderOfferCard(offer) {
   const trades = profile?.trade_count || totalFeedback
   const buttonLabel = selectedSide === 'buy' ? 'Buy' : 'Sell'
   const paymentMethod = getPaymentMethodName(offer.card)
+  const coin = String(offer?.coin || '').toUpperCase()
+  const coinLogo = COIN_LOGOS[coin]
+  const fiatRangeLabel = selectedSide === 'buy' ? 'You can buy' : 'You can sell'
+  const fiatRange = formatOfferFiatRange(offer)
 
   return `
     <article class="p2p-offer-card">
       <div class="p2p-offer-trader">
-        <img class="p2p-offer-avatar" src="${escHtml(avatarPath)}" alt="" />
+        <span class="avatar-presence-wrap p2p-avatar-presence-wrap" title="${escHtml(presence.label)}">
+          <img class="p2p-offer-avatar" src="${escHtml(avatarPath)}" alt="" />
+          <span class="avatar-presence-badge presence-${escHtml(presence.state)}" aria-hidden="true"></span>
+        </span>
         <div class="p2p-offer-trader-copy">
           <div class="p2p-offer-trader-top">
             <strong class="p2p-offer-username">${escHtml(username)}</strong>
-            <span class="p2p-offer-badge">${buttonLabel}</span>
+            <span class="p2p-offer-badge p2p-offer-coin-badge" title="${escHtml(coin || 'Crypto')}">
+              ${coinLogo
+                ? `<img class="p2p-offer-coin-badge-logo" src="${escHtml(coinLogo)}" alt="${escHtml(coin)}" />`
+                : `<span class="p2p-offer-coin-badge-fallback">${escHtml(coin || '?')}</span>`}
+            </span>
           </div>
           <div class="p2p-offer-trader-meta">
+            <span class="p2p-offer-presence is-${escHtml(presence.state)}">
+              <span class="p2p-offer-presence-dot" aria-hidden="true"></span>
+              ${escHtml(presence.label)}
+            </span>
             <span>${escHtml(satisfaction)} positive</span>
             <span>${formatTradeCount(trades)}</span>
           </div>
@@ -459,12 +486,10 @@ function renderOfferCard(offer) {
         <div class="p2p-offer-stat">
           <span class="p2p-offer-label">Payment method</span>
           <strong class="p2p-offer-value">${escHtml(paymentMethod)}</strong>
-          <span class="p2p-offer-subtle">${escHtml(offer.currency)} settlement</span>
         </div>
 
         <div class="p2p-offer-stat p2p-offer-action-block">
-          <span class="p2p-offer-label">You ${selectedSide === 'buy' ? 'pay' : 'receive'}</span>
-          <strong class="p2p-offer-value">${escHtml(offer.currency)}</strong>
+          ${fiatRange ? `<span class="p2p-offer-subtle">${fiatRangeLabel}: ${escHtml(fiatRange)}</span>` : ''}
           <button class="p2p-card-action btn-start-trade${selectedSide === 'sell' ? ' sell' : ''}" data-id="${escHtml(offer.id)}">${buttonLabel}</button>
         </div>
       </div>
@@ -488,6 +513,29 @@ function formatUsd(value) {
   const numeric = Number(value)
   if (Number.isNaN(numeric)) return '$0.00'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(numeric)
+}
+
+function formatOfferFiatRange(offer) {
+  const currency = String(offer?.currency || '').toUpperCase() || 'USD'
+  const min = Number(offer?.min_amount)
+  const max = Number(offer?.max_amount)
+  const hasMin = Number.isFinite(min) && min > 0
+  const hasMax = Number.isFinite(max) && max > 0
+
+  if (hasMin && hasMax) {
+    return `${currency} ${trimMoney(min)} - ${trimMoney(max)}`
+  }
+  if (hasMin) {
+    return `${currency} ${trimMoney(min)}+`
+  }
+  if (hasMax) {
+    return `Up to ${currency} ${trimMoney(max)}`
+  }
+  return ''
+}
+
+function trimMoney(value) {
+  return Number(value).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
 }
 
 function formatCoinAmount(value) {
@@ -668,7 +716,7 @@ async function startTrade(offerId) {
       const { createTrade } = await import('../api.js')
       const trade = await createTrade({ offer_id: offerId, fiat_amount: fiatAmount, crypto_amount: cryptoAmount, coin })
       modal.classList.add('hidden')
-      window.location.href = `/trades.html?trade=${trade.id}`
+      window.location.href = `/trade-detail.html?id=${trade.id}`
     } catch (e) {
       errEl.textContent = e.message
     } finally {

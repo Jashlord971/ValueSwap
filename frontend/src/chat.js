@@ -1,5 +1,28 @@
-import { getMessages, sendMessage, leaveTradeFeedback, getChatReadStatuses, markChatRead } from './api.js'
+import {
+  getChatSync,
+  sendMessage,
+  leaveTradeFeedback,
+  editTradeFeedback,
+  markChatRead,
+} from './api.js'
 import { showAlert, showFeedbackModal } from './modal.js'
+import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import {
+  getDatabase,
+  ref,
+  query,
+  orderByChild,
+  startAt,
+  onChildAdded,
+  onChildChanged,
+  onChildRemoved,
+  onValue,
+} from 'firebase/database'
+import {
+  isActiveFromLastActive,
+  formatPresenceLastSeen,
+  PARTNER_PRESENCE_RECALC_INTERVAL_MS,
+} from './presence.js'
 
 let activeTradeId    = null
 let pollTimer        = null
@@ -8,27 +31,67 @@ let partnerUsername  = null
 let activeTrade      = null
 let initialized      = false
 let lastRenderedTradeId = null
+let lastRenderKey    = null
 let shouldScrollToBottom = false
 let readStatuses     = {}  // tradeId → last_read_at (unix seconds)
+let partnerReceiptStatus = { last_delivered_at: 0, last_read_at: 0 }
+let partnerPresence = { active: false, lastActiveAt: 0 }
+let tradeOpenInSync = true
+let authWatcherBound = false
+const markReadInFlight = new Map()
+let pollInFlight = false
+let chatCursorTs = 0
+let chatMessageCache = []
+let chatFirebaseApp = null
+let chatRealtimeActive = false
+let stopChatRealtimeListeners = null
+let presenceRecalcTimer = null
 // Maps server image URL → local object URL so the sender sees their image instantly
 const recentSentImages = new Map()
+const CLOSED_TRADE_STATUSES = new Set(['completed', 'cancelled', 'expired'])
+const EXPIRES_WITH_TIME_STATUSES = new Set(['open', 'pending'])
 
 export function initChat(firebaseApp, uid) {
-  currentUid = uid
+  chatFirebaseApp = firebaseApp || chatFirebaseApp
+  currentUid = uid || currentUid || getAuth(firebaseApp).currentUser?.uid || null
+
+  if (!authWatcherBound) {
+    authWatcherBound = true
+    onAuthStateChanged(getAuth(firebaseApp), (user) => {
+      if (user?.uid) currentUid = user.uid
+    })
+  }
 
   if (initialized) return
   initialized = true
 
+  // Re-evaluate partner active/inactive status over time even without new DB events.
+  if (!presenceRecalcTimer) {
+    presenceRecalcTimer = setInterval(() => {
+      if (!activeTradeId) return
+      refreshPartnerPresenceState()
+    }, PARTNER_PRESENCE_RECALC_INTERVAL_MS)
+  }
+
   document.addEventListener('open-chat', (e) => {
+    stopRealtimeChatListeners()
     activeTradeId   = e.detail.tradeId
     partnerUsername = e.detail.partnerUsername || null
     activeTrade     = e.detail.trade || null
     shouldScrollToBottom = true
-    clearInterval(pollTimer)
-    // Fetch current read statuses from DB when opening a trade
-    getChatReadStatuses().then(s => { readStatuses = s || {} }).catch(() => {})
-    loadMessages()
-    pollTimer = setInterval(loadMessages, 5000)
+    lastRenderKey = null
+    partnerReceiptStatus = { last_delivered_at: 0, last_read_at: 0 }
+    partnerPresence = { active: false, lastActiveAt: 0 }
+    tradeOpenInSync = isTradeOpenStatus(activeTrade?.status, activeTrade?.expires_at)
+    chatCursorTs = 0
+    chatMessageCache = []
+    readStatuses = {}
+    clearChatPollTimer()
+    loadMessages().finally(() => {
+      if (!startRealtimeChatListeners()) {
+        scheduleNextChatPoll()
+      }
+    })
   })
 
   document.addEventListener('trade-updated', (e) => {
@@ -36,7 +99,26 @@ export function initChat(firebaseApp, uid) {
     if (!trade?.id || !activeTradeId) return
     if (String(trade.id) !== String(activeTradeId)) return
     activeTrade = trade
-    loadMessages()
+    tradeOpenInSync = tradeOpenInSync && isTradeOpenStatus(activeTrade?.status, activeTrade?.expires_at)
+    loadMessages().finally(() => {
+      if (!chatRealtimeActive) scheduleNextChatPoll()
+    })
+  })
+
+  document.addEventListener('visibilitychange', () => {
+    if (!activeTradeId) return
+    if (chatRealtimeActive) return
+    scheduleNextChatPoll()
+  })
+  window.addEventListener('focus', () => {
+    if (!activeTradeId) return
+    if (chatRealtimeActive) return
+    scheduleNextChatPoll()
+  })
+  window.addEventListener('blur', () => {
+    if (!activeTradeId) return
+    if (chatRealtimeActive) return
+    scheduleNextChatPoll()
   })
 
   // Image placeholder click — reveal image and mark trade read
@@ -92,6 +174,12 @@ export function initChat(firebaseApp, uid) {
 
 async function handleSend() {
   if (!activeTradeId) return
+  if (isChatClosed()) {
+    stopRealtimeChatListeners();
+    clearChatPollTimer();
+    syncChatInputState();
+    return
+  }
 
   const textInput  = document.getElementById('chat-text')
   const fileInput  = document.getElementById('chat-image-input')
@@ -135,23 +223,294 @@ async function handleSend() {
 
 async function loadMessages() {
   if (!activeTradeId) return
-  const container = document.getElementById('chat-messages')
   try {
-    const isNewTrade = lastRenderedTradeId !== activeTradeId
-    const wasNearBottom = isNewTrade || isScrolledNearBottom(container)
-    const msgs = await getMessages(activeTradeId)
-    const sorted = [...msgs].sort((a, b) => a.created_at - b.created_at)
-    const messageMarkup = sorted.length ? sorted.map(renderMessage).join('') : '<p class="muted">No messages yet.</p>'
-    container.innerHTML = `${messageMarkup}${renderTradeEventCard()}${renderFeedbackSection()}`
-    syncChatInputState()
-    if (shouldScrollToBottom || wasNearBottom) {
-      container.scrollTop = container.scrollHeight
-      shouldScrollToBottom = false
+    const sync = await getChatSync(activeTradeId, chatCursorTs, shouldPingPresenceHeartbeat())
+    partnerReceiptStatus = {
+      last_delivered_at: Number(sync?.partner_receipt?.last_delivered_at || 0),
+      last_read_at: Number(sync?.partner_receipt?.last_read_at || 0),
     }
-    lastRenderedTradeId = activeTradeId
+    const partnerLastActiveAt = Number(sync?.partner_last_active_at || 0)
+    partnerPresence = {
+      active: isPartnerActiveFromLastActive(partnerLastActiveAt),
+      lastActiveAt: partnerLastActiveAt,
+    }
+    tradeOpenInSync = sync?.trade_open !== false
+    if (!tradeOpenInSync) {
+      stopRealtimeChatListeners()
+      clearChatPollTimer()
+    }
+
+    const incoming = Array.isArray(sync?.messages) ? sync.messages : []
+    if (incoming.length) {
+      chatMessageCache = mergeMessagesById(chatMessageCache, incoming)
+      chatCursorTs = Math.max(chatCursorTs, ...incoming.map(m => Number(m.created_at || 0)))
+    }
+    renderChatFromState()
   } catch (e) {
+    const container = document.getElementById('chat-messages')
     container.innerHTML = `<p class="error">Could not load messages: ${e.message}</p>`
   }
+}
+
+function renderChatFromState() {
+  if (!activeTradeId) return
+  const container = document.getElementById('chat-messages')
+  if (!container) return
+
+  if (isChatClosed()) {
+    stopRealtimeChatListeners()
+    clearChatPollTimer()
+  }
+
+  const isNewTrade = lastRenderedTradeId !== activeTradeId
+  const wasNearBottom = isNewTrade || isScrolledNearBottom(container)
+  const sorted = [...chatMessageCache].sort((a, b) => a.created_at - b.created_at)
+  const latestIncomingTs = sorted
+    .filter(m => m.sender_uid !== currentUid)
+    .reduce((latest, m) => Math.max(latest, Number(m.created_at || 0)), 0)
+  const hasUnreadIncoming = sorted.some(m => m.sender_uid !== currentUid && !Number(m.read_at || 0))
+
+  if (tradeOpenInSync && (hasUnreadIncoming || latestIncomingTs > Number(readStatuses[activeTradeId] || 0))) {
+    readStatuses[activeTradeId] = latestIncomingTs
+    markAsReadSoon(activeTradeId, latestIncomingTs)
+  }
+
+  const readMarker = Number(readStatuses[activeTradeId] || 0)
+  const tradeFeedback = Array.isArray(activeTrade?.feedback) ? activeTrade.feedback.length : 0
+  const tradeKey = activeTrade
+    ? `${activeTrade.status || ''}:${activeTrade.cancel_reason || ''}:${tradeFeedback}`
+    : ''
+  const messagesKey = sorted
+    .map(m => `${m.id}:${m.created_at}:${m.sender_uid}:${m.text ? 1 : 0}:${m.image_url ? 1 : 0}:${Number(m.read_at || 0)}`)
+    .join('|')
+  const partnerReceiptKey = `${Number(partnerReceiptStatus.last_delivered_at || 0)}:${Number(partnerReceiptStatus.last_read_at || 0)}`
+  const partnerPresenceKey = `${partnerPresence.active ? 1 : 0}:${Number(partnerPresence.lastActiveAt || 0)}`
+  const nextRenderKey = `${activeTradeId}|${readMarker}|${partnerReceiptKey}|${partnerPresenceKey}|${tradeKey}|${messagesKey}`
+
+  if (nextRenderKey !== lastRenderKey) {
+    const messageMarkup = sorted.length ? sorted.map(renderMessage).join('') : '<p class="muted">No messages yet.</p>'
+    container.innerHTML = `${renderPartnerPresenceStatus()}${messageMarkup}${renderTradeEventCard()}${renderFeedbackSection()}`
+    lastRenderKey = nextRenderKey
+  }
+
+  syncChatInputState()
+  if (shouldScrollToBottom || wasNearBottom) {
+    container.scrollTop = container.scrollHeight
+    shouldScrollToBottom = false
+  }
+  lastRenderedTradeId = activeTradeId
+}
+
+function clearChatPollTimer() {
+  if (!pollTimer) return
+  clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+function computeChatPollDelay() {
+  if (document.hidden) return 90000
+  if (!document.hasFocus()) return 45000
+  return 30000
+}
+
+function scheduleNextChatPoll() {
+  clearChatPollTimer()
+  if (!activeTradeId) return
+  if (chatRealtimeActive) return
+  pollTimer = setTimeout(runChatPoll, computeChatPollDelay())
+}
+
+async function runChatPoll() {
+  if (pollInFlight) {
+    scheduleNextChatPoll()
+    return
+  }
+  pollInFlight = true
+  try {
+    await loadMessages()
+  } finally {
+    pollInFlight = false
+    scheduleNextChatPoll()
+  }
+}
+
+function mergeMessagesById(existing, incoming) {
+  const byId = new Map()
+  for (const msg of existing || []) {
+    if (!msg?.id) continue
+    byId.set(msg.id, msg)
+  }
+  for (const msg of incoming || []) {
+    if (!msg?.id) continue
+    const prev = byId.get(msg.id)
+    byId.set(msg.id, prev ? { ...prev, ...msg } : msg)
+  }
+  return [...byId.values()]
+}
+
+function getPartnerUidForActiveTrade() {
+  if (!activeTrade || !currentUid) return null
+  return activeTrade.creator_uid === currentUid
+    ? activeTrade.offer_owner_uid
+    : activeTrade.creator_uid
+}
+
+function isTradeOpenStatus(status, expiresAt) {
+  const normalizedStatus = String(status || '').toLowerCase()
+  if (CLOSED_TRADE_STATUSES.has(normalizedStatus)) return false
+
+  const expiryTs = Number(expiresAt || 0)
+  if (expiryTs > 0 && EXPIRES_WITH_TIME_STATUSES.has(normalizedStatus)) {
+    return Math.floor(Date.now() / 1000) < expiryTs
+  }
+
+  return true
+}
+
+function shouldPingPresenceHeartbeat() {
+  if (!activeTradeId) return false
+  if (document.hidden) return false
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false
+  return true
+}
+
+function isPartnerActiveFromLastActive(lastActiveAt) {
+  return isActiveFromLastActive(lastActiveAt)
+}
+
+function refreshPartnerPresenceState() {
+  const nextActive = isPartnerActiveFromLastActive(partnerPresence.lastActiveAt)
+  if (nextActive === !!partnerPresence.active) return
+  partnerPresence = {
+    ...partnerPresence,
+    active: nextActive,
+  }
+  renderChatFromState()
+}
+
+function stopRealtimeChatListeners() {
+  chatRealtimeActive = false
+  if (!stopChatRealtimeListeners) return
+  stopChatRealtimeListeners()
+  stopChatRealtimeListeners = null
+}
+
+function startRealtimeChatListeners() {
+  stopRealtimeChatListeners()
+  if (!chatFirebaseApp || !activeTradeId) return false
+  if (!isTradeOpenStatus(activeTrade?.status, activeTrade?.expires_at) || tradeOpenInSync === false) return false
+
+  try {
+    const db = getDatabase(chatFirebaseApp)
+    const subscribedTradeId = String(activeTradeId)
+    const unsubscribers = []
+
+    const messagesQuery = query(
+      ref(db, `chats/${subscribedTradeId}/messages`),
+      orderByChild('created_at'),
+      startAt(Math.max(0, Number(chatCursorTs || 0)) + 1)
+    )
+
+    const upsertMessage = (snap) => {
+      if (String(activeTradeId) !== subscribedTradeId) return
+      const msg = snap.val()
+      if (!msg?.id) return
+      chatMessageCache = mergeMessagesById(chatMessageCache, [msg])
+      chatCursorTs = Math.max(chatCursorTs, Number(msg.created_at || 0))
+      renderChatFromState()
+    }
+
+    unsubscribers.push(onChildAdded(messagesQuery, upsertMessage, () => {
+      chatRealtimeActive = false
+      scheduleNextChatPoll()
+    }))
+    unsubscribers.push(onChildChanged(messagesQuery, upsertMessage, () => {
+      chatRealtimeActive = false
+      scheduleNextChatPoll()
+    }))
+    unsubscribers.push(onChildRemoved(ref(db, `chats/${subscribedTradeId}/messages`), (snap) => {
+      if (String(activeTradeId) !== subscribedTradeId) return
+      const msg = snap.val()
+      if (!msg?.id) return
+      chatMessageCache = chatMessageCache.filter((m) => String(m.id) !== String(msg.id))
+      renderChatFromState()
+    }, () => {
+      chatRealtimeActive = false
+      scheduleNextChatPoll()
+    }))
+
+    const partnerUid = getPartnerUidForActiveTrade()
+
+    unsubscribers.push(onValue(ref(db, `trades/${subscribedTradeId}/status`), (snap) => {
+      if (String(activeTradeId) !== subscribedTradeId) return
+      const latestStatus = String(snap.val() || '').toLowerCase()
+      if (activeTrade) {
+        activeTrade = { ...activeTrade, status: latestStatus }
+      }
+      tradeOpenInSync = isTradeOpenStatus(latestStatus, activeTrade?.expires_at)
+      if (!tradeOpenInSync) {
+        stopRealtimeChatListeners()
+        clearChatPollTimer()
+      }
+      renderChatFromState()
+    }))
+
+    if (partnerUid) {
+      unsubscribers.push(onValue(ref(db, `chats/${subscribedTradeId}/participants/${partnerUid}`), (snap) => {
+        if (String(activeTradeId) !== subscribedTradeId) return
+        const val = snap.val() || {}
+        partnerReceiptStatus = {
+          last_delivered_at: Number(val.last_delivered_at || 0),
+          last_read_at: Number(val.last_read_at || 0),
+        }
+        renderChatFromState()
+      }))
+
+      unsubscribers.push(onValue(ref(db, `users/${partnerUid}/last_active_at`), (snap) => {
+        if (String(activeTradeId) !== subscribedTradeId) return
+        const lastActiveAt = Number(snap.val() || 0)
+        partnerPresence = {
+          active: isPartnerActiveFromLastActive(lastActiveAt),
+          lastActiveAt,
+        }
+        renderChatFromState()
+      }))
+    }
+
+    stopChatRealtimeListeners = () => {
+      for (const unsubscribe of unsubscribers) {
+        if (typeof unsubscribe === 'function') unsubscribe()
+      }
+    }
+    chatRealtimeActive = true
+    return true
+  } catch {
+    chatRealtimeActive = false
+    return false
+  }
+}
+
+function markAsReadSoon(tradeId, fallbackTs = 0) {
+  if (!tradeId) return
+  if (markReadInFlight.has(tradeId)) return
+
+  const p = markChatRead(tradeId)
+    .then((res) => {
+      const serverTs = Number(res?.last_read_at || 0)
+      if (serverTs > Number(readStatuses[tradeId] || 0)) {
+        readStatuses[tradeId] = serverTs
+      }
+    })
+    .catch(() => {
+      if (fallbackTs > Number(readStatuses[tradeId] || 0)) {
+        readStatuses[tradeId] = fallbackTs
+      }
+    })
+    .finally(() => {
+      markReadInFlight.delete(tradeId)
+    })
+
+  markReadInFlight.set(tradeId, p)
 }
 
 function isScrolledNearBottom(container) {
@@ -233,10 +592,14 @@ function renderFeedbackSection() {
       <div style="margin-top:0.75rem;">
         <p class="muted" style="margin:0;">You left ${myFeedback.positive ? 'positive' : 'negative'} feedback.</p>
         <p style="margin:0.45rem 0 0;white-space:pre-wrap;">${escapeHtml(myFeedback.comment)}</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.65rem;">
+          <button class="btn" data-feedback-action="edit">Edit Feedback</button>
+        </div>
       </div>`
     : `
-      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;">
-        <button class="btn" data-feedback-trigger="true">Leave Feedback</button>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;align-items:center;">
+        <button class="btn" data-feedback-action="create">Leave Feedback</button>
+        <span class="muted" style="font-size:0.82rem;">5 to 200 characters</span>
       </div>`
 
   const partnerMarkup = partnerFeedback
@@ -257,15 +620,27 @@ function renderFeedbackSection() {
 }
 
 document.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-feedback-trigger]')
+  const button = event.target.closest('[data-feedback-action]')
   if (!button || !activeTradeId) return
 
   try {
-    const result = await showFeedbackModal()
+    const mode = button.dataset.feedbackAction
+    const feedback = Array.isArray(activeTrade?.feedback) ? activeTrade.feedback : []
+    const myFeedback = feedback.find(entry => entry.from_uid === currentUid)
+    const result = await showFeedbackModal(mode === 'edit' && myFeedback
+      ? {
+          initialPositive: !!myFeedback.positive,
+          initialComment: String(myFeedback.comment || ''),
+          title: 'Edit Feedback',
+          submitLabel: 'Save Changes',
+        }
+      : undefined)
     if (!result) return
 
     button.disabled = true
-    activeTrade = await leaveTradeFeedback(activeTradeId, result.positive, result.comment)
+    activeTrade = mode === 'edit'
+      ? await editTradeFeedback(activeTradeId, result.positive, result.comment)
+      : await leaveTradeFeedback(activeTradeId, result.positive, result.comment)
     await loadMessages()
   } catch (e) {
     await showAlert('Feedback failed: ' + e.message)
@@ -274,7 +649,8 @@ document.addEventListener('click', async (event) => {
 })
 
 function isChatClosed() {
-  return !!activeTrade && ['completed', 'cancelled', 'expired'].includes(activeTrade.status)
+  if (tradeOpenInSync === false) return true
+  return !!activeTrade && !isTradeOpenStatus(activeTrade.status, activeTrade.expires_at)
 }
 
 function terminalStatusLabel(trade) {
@@ -285,14 +661,44 @@ function renderMessage(msg) {
   const time        = new Date(msg.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const isMe        = msg.sender_uid === currentUid
   const displayName = isMe ? 'You' : (partnerUsername || msg.sender_uid.slice(0, 8))
+  const checksMarkup = isMe ? renderMessageChecks(msg) : ''
   return `
     <div class="chat-row${isMe ? ' chat-row-mine' : ' chat-row-theirs'}">
       <div class="chat-bubble${isMe ? ' chat-bubble-mine' : ' chat-bubble-theirs'}">
         ${!isMe ? `<span class="bubble-name">${escapeHtml(displayName)}</span>` : ''}
         ${msg.text      ? `<p class="bubble-text">${escapeHtml(msg.text)}</p>` : ''}
         ${renderImagePart(msg, isMe)}
-        <span class="bubble-time">${time}</span>
+        <span class="bubble-time"><span class="bubble-time-text">${time}</span>${checksMarkup}</span>
       </div>
+    </div>`
+}
+
+function renderMessageChecks(msg) {
+  const createdAt = Number(msg.created_at || 0)
+  const messageReadAt = Number(msg.read_at || 0)
+  const readAt = Number(partnerReceiptStatus.last_read_at || 0)
+  const deliveredAt = Number(partnerReceiptStatus.last_delivered_at || 0)
+
+  if (messageReadAt > 0 || (createdAt > 0 && readAt >= createdAt)) {
+    return ' <span class="chat-checks chat-checks-read" title="Read">✓✓</span>'
+  }
+  if (createdAt > 0 && deliveredAt >= createdAt) {
+    return ' <span class="chat-checks chat-checks-delivered" title="Delivered">✓</span>'
+  }
+  return ' <span class="chat-checks chat-checks-pending" title="Sent">✓</span>'
+}
+
+function renderPartnerPresenceStatus() {
+  if (!partnerUsername && !partnerPresence.lastActiveAt) return ''
+  const label = partnerPresence.active
+    ? 'Active now'
+    : formatPresenceLastSeen(partnerPresence.lastActiveAt)
+  const dot = partnerPresence.active ? '#22c55e' : '#94a3b8'
+  const who = partnerUsername || 'Partner'
+  return `
+    <div style="display:flex;align-items:center;gap:0.45rem;margin:0.2rem 0 0.75rem;color:var(--muted);font-size:0.8rem;">
+      <span style="width:0.45rem;height:0.45rem;border-radius:999px;background:${dot};display:inline-block;"></span>
+      <span>${escapeHtml(who)} • ${escapeHtml(label)}</span>
     </div>`
 }
 
@@ -300,7 +706,7 @@ function renderImagePart(msg, isMe) {
   if (!msg.image_url) return ''
   // Sender always sees their own image. Receiver sees a placeholder until they click it.
   const lastRead = Number(readStatuses[msg.trade_id] || 0)
-  const alreadyRead = isMe || Number(msg.created_at) <= lastRead
+  const alreadyRead = isMe || Number(msg.read_at || 0) > 0 || Number(msg.created_at) <= lastRead
   console.log('[chat] renderImagePart', { msgId: msg.id, isMe, alreadyRead, lastRead, created_at: msg.created_at })
   if (alreadyRead) {
     // Use local object URL for recently sent images so the sender sees it instantly

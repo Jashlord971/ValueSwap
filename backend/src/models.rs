@@ -32,6 +32,8 @@ pub struct UserProfile {
     pub feedback_pos: u64,
     #[serde(default)]
     pub feedback_neg: u64,
+    #[serde(default)]
+    pub last_active_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,89 +134,6 @@ pub struct TransferRecord {
     pub timestamp: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum SwapOfferStatus {
-    Open,
-    Filled,
-    Cancelled,
-    Expired,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SwapOffer {
-    pub id: String,
-    pub creator_uid: String,
-    pub from_coin: String,
-    pub to_coin: String,
-    pub from_amount: f64,
-    pub to_amount: f64,
-    #[serde(default)]
-    pub taker_profit_pct: f64,
-    pub fee_bps: u16,
-    pub status: SwapOfferStatus,
-    pub created_at: u64,
-    pub expires_at: u64,
-    #[serde(default)]
-    pub remaining_from_amount: Option<f64>,
-    #[serde(default)]
-    pub remaining_to_amount: Option<f64>,
-    #[serde(default)]
-    pub taker_uid: Option<String>,
-    #[serde(default)]
-    pub filled_at: Option<u64>,
-    #[serde(default)]
-    pub cancelled_at: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateSwapOfferRequest {
-    pub from_coin: String,
-    pub to_coin: String,
-    pub from_amount: f64,
-    pub taker_profit_pct: f64,
-    #[serde(default)]
-    pub expires_in_secs: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AcceptSwapOfferRequest {
-    #[serde(default)]
-    pub take_from_amount: Option<f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AcceptSwapOfferResponse {
-    pub offer: SwapOffer,
-    pub filled_from_amount: f64,
-    pub filled_to_amount: f64,
-    pub maker_receive_amount: f64,
-    pub taker_receive_amount: f64,
-    pub fee_from_coin: f64,
-    pub fee_to_coin: f64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WithdrawPlatformFeesRequest {
-    pub coin: String,
-    pub amount: f64,
-    pub to_uid: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PlatformFeesSnapshot {
-    #[serde(default)]
-    pub btc: f64,
-    #[serde(default)]
-    pub eth: f64,
-    #[serde(default)]
-    pub usdt: f64,
-    #[serde(default)]
-    pub usdc: f64,
-    #[serde(default)]
-    pub trx: f64,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WithdrawRequest {
     pub coin: String,
@@ -287,6 +206,12 @@ pub struct Trade {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub offer_owner_avatar_number: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub creator_last_active_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub offer_owner_last_active_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -451,7 +376,6 @@ pub enum CryptoReleaserSide {
 pub struct Offer {
     pub id: String,
     pub creator_uid: String,
-    /// "buy" = poster wants to buy crypto; "sell" = poster wants to sell crypto
     pub offer_type: OfferType,
     /// Payment method ID (matches PaymentMethod.id)
     pub card: String,
@@ -489,6 +413,9 @@ pub struct Offer {
     /// Which side is responsible for releasing crypto on-platform for this offer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_releaser_side: Option<CryptoReleaserSide>,
+    /// Creator last active unix timestamp (seconds), attached for market rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_last_active_at: Option<u64>,
 }
 
 pub fn default_time_limit() -> u64 { 1800 }
@@ -527,20 +454,15 @@ pub struct UpdateOfferRequest {
     pub profit_pct: f64,
     #[serde(default = "default_time_limit")]
     pub time_limit_secs: u64,
-    /// Minimum trade amount in offer currency (optional, USD equivalent must be >= $10 if set)
     #[serde(default)]
     pub min_amount: Option<f64>,
-    /// Maximum trade amount in offer currency (optional, must be > min_amount if set)
     #[serde(default)]
     pub max_amount: Option<f64>,
 }
 
-// ── Gift Cards ────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GiftCard {
     pub id: String,
-    /// SHA-256 of the raw card number — raw number never stored
     pub hash: String,
     pub brand: String,
     pub amount_usd: f64,
@@ -560,18 +482,14 @@ pub enum CardStatus {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterCardRequest {
-    /// Raw card number — will be hashed before persistence
     pub card_number: String,
     pub brand: String,
     pub amount_usd: f64,
     pub trade_id: Option<String>,
 }
 
-// ── OCR ───────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OcrRequest {
-    /// Base64-encoded image (no data-URL prefix)
     pub image_base64: String,
 }
 
@@ -581,15 +499,16 @@ pub struct OcrResponse {
     pub detected_numbers: Vec<String>,
 }
 
-// ── Chat ──────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
     pub id: String,
     pub trade_id: String,
     pub sender_uid: String,
     pub text: Option<String>,
-    /// Firebase Storage download URL for an uploaded image
     pub image_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_by_uid: Option<String>,
     pub created_at: u64,
 }

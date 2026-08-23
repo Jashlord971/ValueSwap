@@ -1,6 +1,15 @@
 {
+  "scripts": {
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cargo run --manifest-path backend/Cargo.toml --bin server",
+    "dev": "concurrently --restart-tries -1 --restart-after 2000 -n backend,frontend -c yellow,cyan \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "restart": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/restart-dev.ps1"
+  },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
     "firebase-admin": "^13.8.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
   }
 }

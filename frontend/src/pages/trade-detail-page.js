@@ -2,10 +2,11 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade } from '../api.js'
-import { showAlert, showConfirm } from '../modal.js'
+import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods } from '../api.js'
+import { showAlert, showConfirm, showFeedbackModal } from '../modal.js'
 import { initChat } from '../chat.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
@@ -16,6 +17,7 @@ let currentUser = null
 let currentTrade = null
 let usdPrices = null
 let statusCountdownTimer = null
+let paymentMethodNameMap = null
 
 const COIN_TO_GECKO = {
   BTC: 'bitcoin',
@@ -51,6 +53,32 @@ async function getUsdPriceForCoin(coin) {
   if (!geckoId) return null
   const price = Number(prices?.[geckoId]?.usd || 0)
   return price > 0 ? price : null
+}
+
+function prettifyPaymentMethodId(raw) {
+  return String(raw || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+async function resolvePaymentMethodName(cardId) {
+  const raw = String(cardId || '').trim()
+  if (!raw) return '—'
+
+  if (!paymentMethodNameMap) {
+    try {
+      const methods = await listPaymentMethods()
+      paymentMethodNameMap = new Map(
+        (methods || []).map((method) => [String(method.id || '').toLowerCase(), method.name || method.id || ''])
+      )
+    } catch {
+      paymentMethodNameMap = new Map()
+    }
+  }
+
+  return paymentMethodNameMap.get(raw.toLowerCase()) || prettifyPaymentMethodId(raw)
 }
 
 function clearStatusCountdownTimer() {
@@ -168,6 +196,8 @@ async function displayTrade() {
   const partnerUid  = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
+  const partnerLastActiveAt = Number(isCreator ? t.offer_owner_last_active_at : t.creator_last_active_at || 0)
+  const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerDisplay = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
 
@@ -180,11 +210,14 @@ async function displayTrade() {
   const cryptoAmtUsd = (t.crypto_amount != null && usdPrice)
     ? `$${(Number(t.crypto_amount) * usdPrice).toFixed(2)} USD equiv`
     : 'USD equiv unavailable'
-  const cardName   = t.card || '—'
+  const cardName   = await resolvePaymentMethodName(t.card)
 
-  // offer_type is the offer owner's perspective ("buy" = they buy crypto, "sell" = they sell crypto)
-  // isBuying = current user is acquiring crypto in this trade
-  const isBuying = (isCreator && t.offer_type === 'sell') || (!isCreator && t.offer_type === 'buy')
+  // offer_type is stored from the offer owner's perspective.
+  // Backend role mapping:
+  // - offer_type="buy": creator is buyer, offer_owner is seller
+  // - offer_type="sell": creator is seller, offer_owner is buyer
+  const offerType = String(t.offer_type || '').toLowerCase()
+  const isBuying = (isCreator && offerType === 'buy') || (!isCreator && offerType === 'sell')
 
   const summary = isBuying
     ? `You are buying <strong>${cryptoAmt}</strong> for <strong>${fiatAmt}</strong> via <strong>${escHtml(cardName)}</strong>`
@@ -210,7 +243,10 @@ async function displayTrade() {
   const card = `
     <div style="display: flex; flex-direction: column; gap: 1.25rem;">
       <div style="display: flex; align-items: center; gap: 0.8rem;">
-        <img src="${escHtml(partnerAvatarPath)}" alt="" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; box-shadow: 0 2px 8px rgba(0,0,0,0.15);" />
+        <span class="trade-detail-avatar-wrap avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+          <img src="${escHtml(partnerAvatarPath)}" alt="" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; box-shadow: 0 2px 8px rgba(0,0,0,0.15);" />
+          <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
+        </span>
         <p style="font-weight: 600; margin: 0;">${escHtml(partnerDisplay)}</p>
       </div>
 
@@ -269,11 +305,100 @@ async function displayTrade() {
 
   document.getElementById('trade-card-container').innerHTML = card
   document.getElementById('trade-status-container').innerHTML = statusCard
+  renderFeedbackSidebarCard(t)
   document.getElementById('trade-terms-text').textContent = t.terms || 'No terms specified.'
   if (showCountdown) bindStatusCountdown(t.expires_at)
   else clearStatusCountdownTimer()
   bindTradeFeesToggle()
   renderTradeActions(t, isBuying)
+}
+
+function renderFeedbackSidebarCard(trade) {
+  const container = document.getElementById('trade-feedback-container')
+  if (!container) return
+
+  const feedback = Array.isArray(trade.feedback) ? trade.feedback : []
+  const myFeedback = feedback.find((entry) => entry.from_uid === currentUser.uid)
+  const receivedFeedback = feedback.find((entry) => entry.to_uid === currentUser.uid && entry.from_uid !== currentUser.uid)
+  const isCompleted = String(trade.status || '').toLowerCase() === 'completed'
+
+  const receivedMarkup = receivedFeedback
+    ? `
+      <div style="margin-top:0.55rem;padding:0.65rem 0.75rem;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,0.02);">
+        <p class="muted" style="margin:0 0 0.25rem;">Feedback left for you</p>
+        <p style="margin:0;font-weight:700;color:${receivedFeedback.positive ? 'var(--success)' : 'var(--danger)'};">${receivedFeedback.positive ? 'Positive' : 'Negative'}</p>
+        <p style="margin:0.35rem 0 0;white-space:pre-wrap;line-height:1.45;">${escHtml(receivedFeedback.comment || '')}</p>
+      </div>`
+    : '<p class="muted" style="margin-top:0.55rem;">No feedback has been left for you yet.</p>'
+
+  let actionMarkup = '<button class="btn" style="margin-top:0.7rem;" disabled>Feedback opens after completion</button>'
+  if (isCompleted) {
+    actionMarkup = myFeedback
+      ? `
+        <div style="margin-top:0.65rem;">
+          <p class="muted" style="margin:0;">Your feedback</p>
+          <p style="margin:0.2rem 0 0;font-weight:700;color:${myFeedback.positive ? 'var(--success)' : 'var(--danger)'};">${myFeedback.positive ? 'Positive' : 'Negative'}</p>
+          <p style="margin:0.35rem 0 0;white-space:pre-wrap;line-height:1.45;">${escHtml(myFeedback.comment || '')}</p>
+          <button id="btn-edit-feedback-sidebar" class="btn" style="margin-top:0.7rem;">Edit Feedback</button>
+        </div>`
+      : '<button id="btn-leave-feedback-sidebar" class="btn" style="margin-top:0.7rem;">Leave Feedback</button>'
+  }
+
+  container.innerHTML = `
+    <h3 style="margin:0 0 0.35rem;font-size:1rem;">Trade Feedback</h3>
+    <p class="muted" style="margin:0;">View partner feedback and leave your own rating.</p>
+    ${receivedMarkup}
+    ${actionMarkup}
+  `
+
+  const btn = container.querySelector('#btn-leave-feedback-sidebar')
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      try {
+        const result = await showFeedbackModal()
+        if (!result) return
+        btn.disabled = true
+        currentTrade = await leaveTradeFeedback(trade.id, result.positive, result.comment)
+        await displayTrade()
+
+        const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
+        const partnerUsername = isCreator
+          ? (currentTrade.offer_owner_username || null)
+          : (currentTrade.creator_username || null)
+        syncTradeChatState(partnerUsername)
+      } catch (e) {
+        await showAlert(`Feedback failed: ${e.message}`)
+        btn.disabled = false
+      }
+    })
+  }
+
+  const editBtn = container.querySelector('#btn-edit-feedback-sidebar')
+  if (editBtn && myFeedback) {
+    editBtn.addEventListener('click', async () => {
+      try {
+        const result = await showFeedbackModal({
+          initialPositive: !!myFeedback.positive,
+          initialComment: String(myFeedback.comment || ''),
+          title: 'Edit Feedback',
+          submitLabel: 'Save Changes',
+        })
+        if (!result) return
+        editBtn.disabled = true
+        currentTrade = await editTradeFeedback(trade.id, result.positive, result.comment)
+        await displayTrade()
+
+        const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
+        const partnerUsername = isCreator
+          ? (currentTrade.offer_owner_username || null)
+          : (currentTrade.creator_username || null)
+        syncTradeChatState(partnerUsername)
+      } catch (e) {
+        await showAlert(`Feedback update failed: ${e.message}`)
+        editBtn.disabled = false
+      }
+    })
+  }
 }
 
 function bindTradeFeesToggle() {
@@ -298,14 +423,18 @@ function syncTradeChatState(partnerUsername) {
 
   async function renderTradeActions(t, isBuying) {
     const container = document.getElementById('trade-actions-container')
+    const card = document.getElementById('trade-actions-card')
     if (!container) return
 
-    const closed = ['completed', 'cancelled', 'expired', 'disputed']
-    if (closed.includes(t.status)) {
-      const reason = t.cancel_reason ? ` — <em>${escHtml(t.cancel_reason)}</em>` : ''
-      container.innerHTML = `<p class="muted">No actions available — trade is <strong>${escHtml(t.status)}</strong>${reason}.</p>`
+    const status = String(t.status || '').toLowerCase()
+    const terminal = ['completed', 'cancelled', 'expired']
+    if (terminal.includes(status)) {
+      if (card) card.classList.add('hidden')
+      container.innerHTML = ''
       return
     }
+
+    if (card) card.classList.remove('hidden')
 
     const buttons = []
 
@@ -343,7 +472,10 @@ function syncTradeChatState(partnerUsername) {
         if (!ok) return
         currentTrade = await markTradePaid(tradeId)
       } else if (action === 'complete') {
-        const ok = await showConfirm('Mark this trade as completed? This confirms you have received payment.')
+        const confirmMessage = String(currentTrade?.status || '').toLowerCase() === 'paid'
+          ? 'Mark this trade as completed? This confirms you have received payment.'
+          : 'Your trade counterparty has not marked this trade as paid yet. Are you still sure you want to release and complete this trade?'
+        const ok = await showConfirm(confirmMessage)
         if (!ok) return
         currentTrade = await completeTrade(tradeId)
       } else if (action === 'cancel') {

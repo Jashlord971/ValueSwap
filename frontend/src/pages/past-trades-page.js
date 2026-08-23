@@ -5,6 +5,7 @@ import { initAuth, onAuthChange, logOut } from '../auth.js'
 import { upsertUser, listTrades } from '../api.js'
 import { cacheGet, cacheInvalidate } from '../cache.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
@@ -78,6 +79,8 @@ function buildPastTradeCard(t) {
   const partnerUid     = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName    = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
+  const partnerLastActiveAt = Number(isCreator ? t.offer_owner_last_active_at : t.creator_last_active_at || 0)
+  const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerDisplay = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
 
@@ -91,7 +94,10 @@ function buildPastTradeCard(t) {
     <div class="trade-card trade-card-past" data-id="${escHtml(t.id)}">
       <div class="trade-card-header">
         <div class="trade-partner">
-          <span class="trade-partner-avatar"><img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" /></span>
+          <span class="trade-partner-avatar avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+            <img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
+            <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
+          </span>
           <div>
             <span class="trade-partner-label">Partner</span>
             <span class="trade-partner-id">${escHtml(partnerDisplay)}</span>

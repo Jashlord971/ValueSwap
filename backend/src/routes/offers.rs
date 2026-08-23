@@ -16,7 +16,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 #[derive(Debug, serde::Deserialize, Default)]
@@ -79,6 +79,39 @@ fn sanitize_terms(raw: &str) -> Result<String, AppError> {
         .chars()
         .filter(|&c| c != '<' && c != '>' && c != '\0' && (c >= ' ' || c == '\n' || c == '\t'))
         .collect();
+
+    let lowered = sanitized.to_lowercase();
+    let prohibited_terms = [
+        "prostitution",
+        "escort service",
+        "sex work",
+        "brothel",
+        "murder for hire",
+        "hitman",
+        "assassination",
+        "cocaine",
+        "heroin",
+        "fentanyl",
+        "meth",
+        "methamphetamine",
+        "ecstasy",
+        "mdma",
+        "drug trafficking",
+        "sell drugs",
+        "buy drugs",
+        "illegal activity",
+        "stolen card",
+        "fake id",
+        "forged documents",
+        "human trafficking",
+    ];
+
+    if prohibited_terms.iter().any(|term| lowered.contains(term)) {
+        return Err(AppError::BadRequest(
+            "Offer terms contain prohibited language related to illegal activity".into(),
+        ));
+    }
+
     Ok(sanitized)
 }
 
@@ -132,13 +165,8 @@ fn payment_method_escrow_fee_pct(card: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
-fn required_locked_crypto_for_fiat(
-    fiat_amount: f64,
-    fiat_to_usd: f64,
-    coin_price_usd: f64,
-    profit_pct: f64,
-    escrow_fee_pct: f64,
-) -> Option<f64> {
+fn required_locked_crypto_for_fiat(fiat_amount: f64, fiat_to_usd: f64, coin_price_usd: f64, profit_pct: f64,
+    escrow_fee_pct: f64) -> Option<f64> {
     if fiat_amount <= 0.0 || fiat_to_usd <= 0.0 || coin_price_usd <= 0.0 {
         return None;
     }
@@ -148,15 +176,12 @@ fn required_locked_crypto_for_fiat(
         return None;
     }
 
-    // Target crypto value before settlement fees (same notion used in trade quote UI).
     let target_crypto_value_usd = (fiat_amount * fiat_to_usd) / multiplier;
     let target_net_crypto = target_crypto_value_usd / coin_price_usd;
     if !target_net_crypto.is_finite() || target_net_crypto <= 0.0 {
         return None;
     }
 
-    // Escrow fee is deducted on normal completion; lock enough so counterparty can receive target net.
-    // Dispute fee is NOT included here because it only applies if a dispute occurs.
     let escrow_rate = (escrow_fee_pct / 100.0).clamp(0.0, 0.95);
     let locked = target_net_crypto / (1.0 - escrow_rate);
     if locked.is_finite() && locked > 0.0 {
@@ -166,14 +191,8 @@ fn required_locked_crypto_for_fiat(
     }
 }
 
-async fn ensure_no_duplicate_active_offer(
-    db: &RtdbClient<'_>,
-    creator_uid: &str,
-    card_id: &str,
-    currency: &str,
-    offer_type: &OfferType,
-    exclude_id: Option<&str>,
-) -> Result<(), AppError> {
+async fn ensure_no_duplicate_active_offer(db: &RtdbClient<'_>, creator_uid: &str, card_id: &str, currency: &str,
+    offer_type: &OfferType, exclude_id: Option<&str>) -> Result<(), AppError> {
     let existing: Vec<Offer> = db
         .get_collection("offers")
         .await?
@@ -233,15 +252,12 @@ fn offer_passes_market_filters(
 
 fn inferred_crypto_releaser_side(offer_type: &OfferType) -> CryptoReleaserSide {
     match offer_type {
-        // Buy offer: maker will release crypto after taker pays via listed payment method.
         OfferType::Buy => CryptoReleaserSide::Maker,
-        // Sell offer: taker initiating the trade must provide/release crypto.
         OfferType::Sell => CryptoReleaserSide::Taker,
     }
 }
 
 fn effective_crypto_releaser_side(offer: &Offer) -> CryptoReleaserSide {
-    // Derive from offer_type to avoid stale persisted values from older logic.
     inferred_crypto_releaser_side(&offer.offer_type)
 }
 
@@ -379,8 +395,6 @@ struct BalanceAdjustmentResult {
     max_amount_auto_adjusted: bool,
 }
 
-/// Applies maker-side balance validation for offers where maker releases crypto.
-/// Returns: whether to deactivate, adjusted max_amount, and flag if max was adjusted.
 async fn check_and_adjust_offer_balance(
     admin_db: &RtdbClient<'_>,
     state: &AppState,
@@ -393,7 +407,6 @@ async fn check_and_adjust_offer_balance(
     profit_pct: f64,
     card_id: &str,
 ) -> Result<BalanceAdjustmentResult, AppError> {
-    // We can only pre-validate balances for maker-side crypto release.
     if crypto_releaser_side != CryptoReleaserSide::Maker {
         return Ok(BalanceAdjustmentResult {
             should_deactivate: false,
@@ -416,8 +429,7 @@ async fn check_and_adjust_offer_balance(
     let coin_price_usd = fetch_coin_usd_price(state, coin).await?;
     let fiat_to_usd = convert_to_usd(state, 1.0, currency).await?;
     let escrow_fee_pct = payment_method_escrow_fee_pct(card_id);
-
-    // Calculate required locked crypto for min and max fiat amounts, fee-aware.
+    
     let min_crypto_required = required_locked_crypto_for_fiat(
         min_fiat,
         fiat_to_usd,
@@ -445,7 +457,6 @@ async fn check_and_adjust_offer_balance(
         });
     }
 
-    // If user has less than max required, auto-adjust max_amount down
     if crypto_balance < max_crypto_required {
         // Reverse fee-aware formula to compute max fiat supported by available locked crypto.
         let escrow_rate = (escrow_fee_pct / 100.0).clamp(0.0, 0.95);
@@ -498,7 +509,6 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
         return Err(AppError::BadRequest("time_limit_secs must be 900 (15 min), 1800 (30 min), or 3600 (1 hr)".into()));
     }
 
-    // Check balance and adjust for offers where maker releases crypto.
     let balance_db = RtdbClient::new(&state, &user.id_token);
     let balance_result = check_and_adjust_offer_balance(
         &balance_db,
@@ -515,9 +525,7 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
     .await?;
 
     if balance_result.should_deactivate {
-        return Err(AppError::BadRequest(
-            "Insufficient crypto balance to create this buy offer: minimum amount is not coverable".into(),
-        ));
+        return Err(AppError::BadRequest("Insufficient crypto balance to create this buy offer: minimum amount is not coverable".into()));
     }
 
     let final_status = OfferStatus::Active;
@@ -542,6 +550,7 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
         max_amount: final_max_amount,
         max_amount_auto_adjusted: balance_result.max_amount_auto_adjusted,
         crypto_releaser_side: Some(crypto_releaser_side),
+        creator_last_active_at: None,
     };
 
     db.set(&format!("offers/{}", offer.id), &serde_json::to_value(&offer).unwrap()).await?;
@@ -552,6 +561,7 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
 async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Json<Vec<Offer>>, AppError> {
     let state = &ctx.state;
     let user = &ctx.user;
+    let is_market = query.market.unwrap_or(false);
     let db = RtdbClient::new(&state, &user.id_token);
     let docs = db.get_collection("offers").await?;
 
@@ -560,7 +570,7 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
         .filter_map(|v| serde_json::from_value::<Offer>(v).ok())
         .collect();
 
-    if query.market.unwrap_or(false) {
+    if is_market {
         let my_profile = db
             .get(&format!("users/{}", user.uid))
             .await?
@@ -577,8 +587,8 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
 
         let side = query.side.as_deref().map(|s| s.trim().to_lowercase());
         let desired_offer_type = match side.as_deref() {
-            Some("buy") => Some(OfferType::Sell),
-            Some("sell") => Some(OfferType::Buy),
+            Some("buy") => Some(OfferType::Buy),
+            Some("sell") => Some(OfferType::Sell),
             _ => None,
         };
         let amount = query.amount.filter(|v| *v > 0.0);
@@ -590,9 +600,10 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
         let mut coin_usd_by_coin: HashMap<String, f64> = HashMap::new();
         let mut balance_by_uid_coin: HashMap<String, f64> = HashMap::new();
         let mut filtered = Vec::new();
-        let balance_db = amount.map(|_| RtdbClient::new(&state, &user.id_token));
+        let balance_db = RtdbClient::new_admin(&state);
+        let mut balance_checks_enabled = true;
 
-        for offer in offers {
+        for mut offer in offers {
             if !offer_passes_market_filters(
                 &offer,
                 &user.uid,
@@ -605,6 +616,8 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
             }
 
             let creator_profile = profiles_by_uid.get(&offer.creator_uid);
+            offer.creator_last_active_at = creator_profile
+                .and_then(|p| (p.last_active_at > 0).then_some(p.last_active_at));
             let i_blocked_them = my_profile
                 .as_ref()
                 .map(|p| p.blocked_users.contains(&offer.creator_uid))
@@ -616,6 +629,52 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
                 continue;
             }
 
+            if balance_checks_enabled {
+                let side = effective_crypto_releaser_side(&offer);
+                match check_and_adjust_offer_balance(
+                    &balance_db,
+                    &state,
+                    &offer.creator_uid,
+                    side,
+                    &offer.coin,
+                    &offer.currency,
+                    offer.min_amount,
+                    offer.max_amount,
+                    offer.profit_pct,
+                    &offer.card,
+                )
+                .await {
+                    Ok(adjustment) => {
+                        if adjustment.should_deactivate {
+                            continue;
+                        }
+
+                        let old_max_amount = offer.max_amount;
+                        offer.max_amount = adjustment.adjusted_max_amount.or(offer.max_amount);
+                        offer.max_amount_auto_adjusted = adjustment.max_amount_auto_adjusted;
+
+                        if offer.max_amount != old_max_amount {
+                            db.set(
+                                &format!("offers/{}", offer.id),
+                                &serde_json::to_value(&offer).unwrap(),
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(e) if is_rtdb_permission_error(&e) => {
+                        warn!("list_offers market: admin balance checks disabled due to RTDB permission error: {}", e);
+                        balance_checks_enabled = false;
+
+                        if side == CryptoReleaserSide::Maker {
+                            continue;
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else if effective_crypto_releaser_side(&offer) == CryptoReleaserSide::Maker {
+                continue;
+            }
+
             if let Some(fiat_amount) = amount {
                 match (offer.min_amount, offer.max_amount) {
                     (Some(min), Some(max)) if fiat_amount >= min && fiat_amount <= max => {}
@@ -624,18 +683,27 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
             }
 
             if let Some(fiat_amount) = amount {
-                if let Some(balance_db_ref) = balance_db.as_ref() {
-                    if !offer_has_sufficient_balance_for_market(
+                if balance_checks_enabled {
+                    match offer_has_sufficient_balance_for_market(
                         &state,
-                        balance_db_ref,
+                        &balance_db,
                         &offer,
                         &user.uid,
                         fiat_amount,
                         &mut fiat_to_usd_by_currency,
                         &mut coin_usd_by_coin,
                         &mut balance_by_uid_coin,
-                    ).await? {
-                        continue;
+                    ).await {
+                        Ok(has_balance) => {
+                            if !has_balance {
+                                continue;
+                            }
+                        }
+                        Err(e) if is_rtdb_permission_error(&e) => {
+                            warn!("list_offers market: amount balance filter disabled due to RTDB permission error: {}", e);
+                            balance_checks_enabled = false;
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -644,10 +712,70 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
         }
 
         offers = filtered;
+    } else {
+        let balance_db = RtdbClient::new(&state, &user.id_token);
+        let self_last_active_at = db
+            .get(&format!("users/{}", user.uid))
+            .await?
+            .and_then(|v| v.get("last_active_at").and_then(|x| x.as_u64()));
+
+        for offer in &mut offers {
+            if offer.creator_uid == user.uid {
+                offer.creator_last_active_at = self_last_active_at;
+
+                if offer.status == OfferStatus::Active {
+                    let side = effective_crypto_releaser_side(offer);
+                    let adjustment = check_and_adjust_offer_balance(
+                        &balance_db,
+                        &state,
+                        &user.uid,
+                        side,
+                        &offer.coin,
+                        &offer.currency,
+                        offer.min_amount,
+                        offer.max_amount,
+                        offer.profit_pct,
+                        &offer.card,
+                    )
+                    .await?;
+
+                    let old_status = offer.status.clone();
+                    let old_max = offer.max_amount;
+                    let old_auto = offer.max_amount_auto_adjusted;
+
+                    if adjustment.should_deactivate {
+                        offer.status = OfferStatus::Inactive;
+                    }
+                    offer.max_amount = adjustment.adjusted_max_amount.or(offer.max_amount);
+                    offer.max_amount_auto_adjusted = adjustment.max_amount_auto_adjusted;
+
+                    if offer.status != old_status
+                        || offer.max_amount != old_max
+                        || offer.max_amount_auto_adjusted != old_auto
+                    {
+                        db.set(
+                            &format!("offers/{}", offer.id),
+                            &serde_json::to_value(&offer).unwrap(),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
     }
 
     offers.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(Json(offers))
+}
+
+fn is_rtdb_permission_error(err: &AppError) -> bool {
+    match err {
+        AppError::Internal(msg) => {
+            let lowered = msg.to_lowercase();
+            lowered.contains("permission denied") || lowered.contains("401 unauthorized") || lowered.contains("401")
+        }
+        _ => false,
+    }
 }
 
 async fn read_balance_coin(db: &RtdbClient<'_>, uid: &str, coin: &str) -> Result<f64, AppError> {
@@ -773,27 +901,6 @@ async fn toggle_offer_status(ctx: Ctx, Path(id): Path<String>, Json(req): Json<U
 async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOfferRequest>) -> Result<Json<Offer>, AppError> {
     let state = &ctx.state;
     let user = &ctx.user;
-    let pms = payment_methods();
-    let pm = resolve_payment_method(&req.card, &pms)?;
-    let card_id = pm.id.clone();
-
-    let currency = normalize_currency(&req.currency);
-    ensure_currency_supported(&currency)?;
-    ensure_payment_method_currency_allowed(pm, &currency)?;
-    
-    let coin = validate_coin(&req.coin)?;
-    let crypto_releaser_side = inferred_crypto_releaser_side(&req.offer_type);
-    
-    if !(-100.0..=200.0).contains(&req.profit_pct) {
-        return Err(AppError::BadRequest(
-            "profit_pct must be between -100 and 200".into(),
-        ));
-    }
-    
-    validate_min_max_amounts(&state, req.min_amount, req.max_amount, &currency).await?;
-    
-    let terms = sanitize_terms(&req.terms)?;
-
     let db = RtdbClient::new(&state, &user.id_token);
     let val = db
         .get(&format!("offers/{}", id))
@@ -807,7 +914,34 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
         return Err(AppError::Forbidden("You can only modify your own offers".into()));
     }
 
-    ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &req.offer_type, Some(&id)).await?;
+    if req.offer_type != offer.offer_type {
+        return Err(AppError::BadRequest(
+            "Offer type cannot be changed after creation".into(),
+        ));
+    }
+
+    let pms = payment_methods();
+    let pm = resolve_payment_method(&req.card, &pms)?;
+    let card_id = pm.id.clone();
+
+    let currency = normalize_currency(&req.currency);
+    ensure_currency_supported(&currency)?;
+    ensure_payment_method_currency_allowed(pm, &currency)?;
+
+    let coin = validate_coin(&req.coin)?;
+    let crypto_releaser_side = inferred_crypto_releaser_side(&offer.offer_type);
+
+    if !(-100.0..=200.0).contains(&req.profit_pct) {
+        return Err(AppError::BadRequest(
+            "profit_pct must be between -100 and 200".into(),
+        ));
+    }
+
+    validate_min_max_amounts(&state, req.min_amount, req.max_amount, &currency).await?;
+
+    let terms = sanitize_terms(&req.terms)?;
+
+    ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &offer.offer_type, Some(&id)).await?;
 
     // Check balance and adjust for offers where maker releases crypto.
     let balance_db = RtdbClient::new(&state, &user.id_token);
@@ -825,7 +959,6 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
     )
     .await?;
 
-    offer.offer_type = req.offer_type;
     offer.card = card_id;
     offer.currency = currency;
     offer.coin = coin;
@@ -868,6 +1001,94 @@ async fn delete_offer(ctx: Ctx, Path(id): Path<String>) -> Result<StatusCode, Ap
     db.delete(&format!("offers/{}", id)).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn rebalance_active_offers_for_user(state: Arc<AppState>, uid: &str) -> Result<u64, AppError> {
+    let db = RtdbClient::new_admin(&state);
+    let docs = db.get_collection("offers").await?;
+
+    let mut updated = 0u64;
+    for val in docs {
+        let Ok(mut offer) = serde_json::from_value::<Offer>(val) else {
+            continue;
+        };
+
+        if offer.status != OfferStatus::Active || offer.creator_uid != uid {
+            continue;
+        }
+
+        let side = effective_crypto_releaser_side(&offer);
+        let balance_result = check_and_adjust_offer_balance(
+            &db,
+            &state,
+            &offer.creator_uid,
+            side,
+            &offer.coin,
+            &offer.currency,
+            offer.min_amount,
+            offer.max_amount,
+            offer.profit_pct,
+            &offer.card,
+        )
+        .await?;
+
+        let new_status = if balance_result.should_deactivate {
+            OfferStatus::Inactive
+        } else {
+            OfferStatus::Active
+        };
+        let new_max = balance_result.adjusted_max_amount.or(offer.max_amount);
+        let new_auto = balance_result.max_amount_auto_adjusted;
+
+        let changed = offer.status != new_status
+            || offer.max_amount != new_max
+            || offer.max_amount_auto_adjusted != new_auto;
+
+        if !changed {
+            continue;
+        }
+
+        offer.status = new_status;
+        offer.max_amount = new_max;
+        offer.max_amount_auto_adjusted = new_auto;
+        db.set(&format!("offers/{}", offer.id), &serde_json::to_value(&offer).unwrap())
+            .await?;
+        updated += 1;
+    }
+
+    Ok(updated)
+}
+
+pub async fn rebalance_all_active_offers(state: Arc<AppState>) {
+    let db = RtdbClient::new_admin(&state);
+    let docs = match db.get_collection("offers").await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("rebalance_all_active_offers: list failed: {e}");
+            return;
+        }
+    };
+
+    let mut uids = std::collections::HashSet::new();
+    for val in docs {
+        if let Ok(offer) = serde_json::from_value::<Offer>(val) {
+            if offer.status == OfferStatus::Active {
+                uids.insert(offer.creator_uid);
+            }
+        }
+    }
+
+    let mut touched = 0u64;
+    for uid in uids {
+        match rebalance_active_offers_for_user(state.clone(), &uid).await {
+            Ok(n) => touched += n,
+            Err(e) => tracing::warn!("rebalance_all_active_offers: user {} failed: {}", uid, e),
+        }
+    }
+
+    if touched > 0 {
+        tracing::info!("Cron: rebalanced {} offer(s)", touched);
+    }
 }
 
 fn unix_now() -> u64 {

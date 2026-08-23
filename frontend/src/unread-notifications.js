@@ -1,4 +1,4 @@
-import { listTrades, getMessages, getChatReadStatuses, markChatRead } from './api.js'
+import { listTrades, getMessages, markChatRead } from './api.js'
 import { initializeApp, getApps } from 'firebase/app'
 import { getDatabase, ref, query, orderByChild, equalTo, onValue } from 'firebase/database'
 import { firebaseConfig } from './firebase-config.js'
@@ -24,6 +24,76 @@ function writeJson(key, value) {
 
 function shortTradeId(id) {
   return String(id || '').slice(0, 8)
+}
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function prettifyPaymentMethodId(raw) {
+  return String(raw || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+function closeTradePopupModal() {
+  document.getElementById('trade-popup-modal-overlay')?.remove()
+}
+
+function showIncomingTradePopupModal(trade) {
+  if (!trade?.id) return
+
+  closeTradePopupModal()
+  const overlay = document.createElement('div')
+  overlay.id = 'trade-popup-modal-overlay'
+  overlay.className = 'modal-overlay'
+  const fiat = Number.isFinite(Number(trade.fiat_amount))
+    ? `${escapeHtml(trade.currency || 'USD')} ${Number(trade.fiat_amount).toFixed(2)}`
+    : '—'
+  const crypto = Number.isFinite(Number(trade.crypto_amount))
+    ? `${Number(trade.crypto_amount).toFixed(6)} ${escapeHtml(trade.coin || '')}`
+    : '—'
+  const payment = prettifyPaymentMethodId(trade.card || '—')
+  const type = String(trade.offer_type || '').toLowerCase() === 'buy' ? 'Buy' : 'Sell'
+  const created = Number(trade.created_at || 0) > 0
+    ? new Date(Number(trade.created_at) * 1000).toLocaleString()
+    : new Date().toLocaleString()
+
+  overlay.innerHTML = `
+    <div class="modal wallet-action-modal" style="max-width:520px;">
+      <div class="modal-header">
+        <h2>New Trade Opened</h2>
+        <button class="btn-modal-close" aria-label="Close">✕</button>
+      </div>
+      <p class="muted" style="margin-top:0.6rem;">A new trade was just opened with you.</p>
+      <div style="margin-top:0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem 1rem;">
+        <div><span class="muted">Trade</span><div>#${escapeHtml(shortTradeId(trade.id))}</div></div>
+        <div><span class="muted">Type</span><div>${escapeHtml(type)}</div></div>
+        <div><span class="muted">Payment Method</span><div>${escapeHtml(payment)}</div></div>
+        <div><span class="muted">Status</span><div style="text-transform:capitalize;">${escapeHtml(trade.status || 'open')}</div></div>
+        <div><span class="muted">Fiat</span><div>${fiat}</div></div>
+        <div><span class="muted">Crypto</span><div>${crypto}</div></div>
+      </div>
+      <p class="muted" style="margin-top:0.8rem;">Opened: ${escapeHtml(created)}</p>
+      <div class="confirm-modal-actions" style="margin-top:1rem;">
+        <button class="btn-cancel" id="trade-popup-dismiss">Dismiss</button>
+        <a class="btn btn-success" id="trade-popup-open" href="/trade-detail.html?id=${encodeURIComponent(trade.id)}">Open Trade</a>
+      </div>
+    </div>
+  `
+
+  document.body.appendChild(overlay)
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeTradePopupModal()
+  })
+  overlay.querySelector('.btn-modal-close')?.addEventListener('click', closeTradePopupModal)
+  overlay.querySelector('#trade-popup-dismiss')?.addEventListener('click', closeTradePopupModal)
 }
 
 function unreadLabel(total) {
@@ -96,22 +166,27 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   }
 
   const notifiedKey = `trade:lastNotified:${user.uid}`
+  const popupNotifiedKey = `trade:lastPopupNotified:${user.uid}`
+  const seenTradeStateKey = `trade:seenState:${user.uid}`
+  const seenMessageActivityKey = `trade:seenMessage:${user.uid}`
   const lastNotifiedByTrade = readJson(notifiedKey, {})
-  // readsByTrade is the in-memory cache of DB-backed read timestamps
-  let readsByTrade = {}
+  const popupNotifiedByTrade = readJson(popupNotifiedKey, {})
+  const seenTradeStateByTrade = readJson(seenTradeStateKey, {})
+  const seenMessageActivityByTrade = readJson(seenMessageActivityKey, {})
   let latestIncomingByTrade = {}
+  let notificationsHydrated = false
 
   const shell = document.createElement('div')
   shell.className = 'nav-notifications'
   shell.innerHTML = `
-    <button id="btn-nav-bell" class="nav-bell-btn" title="Unread messages" aria-label="Unread messages" aria-expanded="false">
+    <button id="btn-nav-bell" class="nav-bell-btn" title="Notifications" aria-label="Notifications" aria-expanded="false">
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5"/><path d="M9 17a3 3 0 0 0 6 0"/></svg>
       <span id="nav-bell-badge" class="nav-bell-badge hidden">0</span>
     </button>
     <div id="nav-bell-panel" class="nav-bell-panel hidden">
-      <div class="nav-bell-head">Unread messages</div>
+      <div class="nav-bell-head">Notifications</div>
       <div id="nav-bell-list" class="nav-bell-list">
-        <p class="muted">No unread messages.</p>
+        <p class="muted">No notifications.</p>
       </div>
     </div>
   `
@@ -220,25 +295,61 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     writeJson(notifiedKey, lastNotifiedByTrade)
   }
 
-  function markRead(tradeId, atTs) {
-    if (!tradeId) return
-    const ts = Number(atTs || latestIncomingByTrade[tradeId] || Math.floor(Date.now() / 1000))
-    // Optimistically update in-memory cache for instant UI response
-    readsByTrade[tradeId] = ts
-    // Persist to DB (fire-and-forget)
-    markChatRead(tradeId).catch(() => {})
+  function persistPopupNotified() {
+    writeJson(popupNotifiedKey, popupNotifiedByTrade)
   }
 
-  function render(items, totalUnreadMessages) {
-    if (totalUnreadMessages > 0) {
-      badge.textContent = unreadLabel(totalUnreadMessages)
+  function persistSeenTradeState() {
+    writeJson(seenTradeStateKey, seenTradeStateByTrade)
+  }
+
+  function persistSeenMessageActivity() {
+    writeJson(seenMessageActivityKey, seenMessageActivityByTrade)
+  }
+
+  function summarizeTradeNotification(trade, isNewTrade) {
+    if (isNewTrade) return 'Trade started'
+
+    const status = String(trade?.status || '').toLowerCase()
+    if (status === 'paid') return 'Trade marked as paid'
+    if (status === 'completed') return 'Trade completed'
+    if (status === 'cancelled') return 'Trade cancelled'
+    if (status === 'disputed') return 'Trade disputed'
+    if (status === 'expired') return 'Trade expired'
+    if (status === 'pending') return 'Trade pending'
+    return 'Trade updated'
+  }
+
+  function markRead(tradeId, options = {}) {
+    if (!tradeId) return
+    const ts = Number(options.messageTs || latestIncomingByTrade[tradeId] || 0)
+    if (ts > 0) {
+      markChatRead(tradeId).catch(() => {})
+    }
+
+    const activityTs = Number(options.messageActivityTs || options.messageTs || 0)
+    if (activityTs > 0) {
+      seenMessageActivityByTrade[tradeId] = activityTs
+      persistSeenMessageActivity()
+    }
+
+    const currentFingerprint = options.tradeFingerprint || knownTradeFingerprints[tradeId]
+    if (currentFingerprint) {
+      seenTradeStateByTrade[tradeId] = currentFingerprint
+      persistSeenTradeState()
+    }
+  }
+
+  function render(items, totalNotifications) {
+    if (totalNotifications > 0) {
+      badge.textContent = unreadLabel(totalNotifications)
       badge.classList.remove('hidden')
     } else {
       badge.classList.add('hidden')
     }
 
     if (!items.length) {
-      listEl.innerHTML = '<p class="muted">No unread messages.</p>'
+      listEl.innerHTML = '<p class="muted">No notifications.</p>'
       return
     }
 
@@ -249,12 +360,15 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       return `
         <a href="/trade-detail.html?id=${encodeURIComponent(tradeId)}" class="nav-bell-item" data-trade-id="${tradeId}">
           <div class="nav-bell-item-top">
-            <span class="nav-bell-item-title">Trade #${shortTradeId(tradeId)}...</span>
-            <span class="nav-bell-item-count">${displayUnread}</span>
+            <span class="nav-bell-item-title">${item.title}</span>
+            ${item.unreadCount > 0 ? `<span class="nav-bell-item-count">${displayUnread}</span>` : ''}
           </div>
           <div class="nav-bell-item-meta">
             <span class="${statusClass}">${item.trade.status}</span>
-            <span>${new Date(item.latestIncomingTs * 1000).toLocaleString()}</span>
+            <span>${item.subtitle}</span>
+          </div>
+          <div class="nav-bell-item-meta">
+            <span>${new Date(item.timestamp * 1000).toLocaleString()}</span>
           </div>
         </a>
       `
@@ -263,7 +377,12 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     listEl.querySelectorAll('.nav-bell-item').forEach((a) => {
       a.addEventListener('click', () => {
         const tradeId = a.getAttribute('data-trade-id')
-        markRead(tradeId)
+        const item = items.find((entry) => String(entry.trade.id) === String(tradeId))
+        markRead(tradeId, {
+          messageTs: item?.latestIncomingTs,
+          messageActivityTs: item?.latestAnyMessageTs,
+          tradeFingerprint: item?.tradeFingerprint,
+        })
       })
     })
   }
@@ -275,17 +394,20 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     items.forEach((item) => {
       const tradeId = item.trade.id
       const lastNotified = Number(lastNotifiedByTrade[tradeId] || 0)
-      if (item.latestIncomingTs <= lastNotified) return
-      if (item.latestIncomingTs <= Number(readsByTrade[tradeId] || 0)) return
+      if (item.timestamp <= lastNotified) return
 
-      lastNotifiedByTrade[tradeId] = item.latestIncomingTs
-      const n = new Notification('New trade message', {
-        body: `Trade #${shortTradeId(tradeId)}... has ${item.unreadCount} unread message${item.unreadCount === 1 ? '' : 's'}.`,
+      lastNotifiedByTrade[tradeId] = item.timestamp
+      const n = new Notification(item.title, {
+        body: item.subtitle,
         tag: `trade-${tradeId}`,
       })
       n.onclick = () => {
         window.focus()
-        markRead(tradeId)
+        markRead(tradeId, {
+          messageTs: item.latestIncomingTs,
+          messageActivityTs: item.latestAnyMessageTs,
+          tradeFingerprint: item.tradeFingerprint,
+        })
         window.location.href = `/trade-detail.html?id=${encodeURIComponent(tradeId)}`
       }
     })
@@ -297,24 +419,23 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     if (running) return
     running = true
     try {
-      // Fetch read statuses from DB and active trades in parallel
-      const [dbReads, trades] = await Promise.all([
-        getChatReadStatuses().catch(() => ({})),
-        listTrades(),
-      ])
-      // Merge DB reads into in-memory cache (DB wins over optimistic local values)
-      Object.assign(readsByTrade, dbReads)
+      const trades = await listTrades()
 
       const byTrade = await Promise.all(
         trades.map(async (trade) => {
           try {
             const msgs = await getMessages(trade.id)
+            const latestMessage = msgs.reduce((latest, message) => {
+              return Number(message?.created_at || 0) > Number(latest?.created_at || 0) ? message : latest
+            }, null)
             const incoming = msgs.filter((m) => m.sender_uid !== user.uid)
-            const readTs = Number(readsByTrade[trade.id] || 0)
-            const unread = incoming.filter((m) => Number(m.created_at || 0) > readTs)
+            const unread = incoming.filter((m) => String(m.read_by_uid || '') !== String(user.uid))
             const latestIncomingTs = unread.length
               ? Math.max(...unread.map((m) => Number(m.created_at || 0)))
               : (incoming.length ? Math.max(...incoming.map((m) => Number(m.created_at || 0))) : 0)
+            const latestAnyMessageTs = msgs.length
+              ? Math.max(...msgs.map((m) => Number(m.created_at || 0)))
+              : 0
 
             latestIncomingByTrade[trade.id] = latestIncomingTs
 
@@ -322,20 +443,99 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
               trade,
               unreadCount: unread.length,
               latestIncomingTs,
+              latestAnyMessageTs,
+              latestMessageSenderUid: latestMessage?.sender_uid || null,
             }
           } catch {
-            return { trade, unreadCount: 0, latestIncomingTs: 0 }
+            return { trade, unreadCount: 0, latestIncomingTs: 0, latestAnyMessageTs: 0, latestMessageSenderUid: null }
           }
         })
       )
 
-      const unreadItems = byTrade
-        .filter((item) => item.unreadCount > 0)
-        .sort((a, b) => b.latestIncomingTs - a.latestIncomingTs)
+      const notificationItems = []
 
-      const totalUnreadMessages = unreadItems.reduce((sum, item) => sum + item.unreadCount, 0)
-      render(unreadItems, totalUnreadMessages)
-      desktopNotify(unreadItems)
+      byTrade.forEach((item) => {
+        const tradeId = item.trade.id
+        const currentFingerprint = tradeFingerprint(item.trade)
+        const seenFingerprint = seenTradeStateByTrade[tradeId]
+        const seenMessageActivityTs = Number(seenMessageActivityByTrade[tradeId] || 0)
+
+        if (!notificationsHydrated && !seenFingerprint) {
+          seenTradeStateByTrade[tradeId] = currentFingerprint
+          if (item.latestAnyMessageTs > 0 && !seenMessageActivityTs) {
+            seenMessageActivityByTrade[tradeId] = item.latestAnyMessageTs
+          }
+        } else if (notificationsHydrated && seenFingerprint !== currentFingerprint) {
+          const isNewTrade = !seenFingerprint
+          notificationItems.push({
+            kind: 'trade',
+            trade: item.trade,
+            unreadCount: 0,
+            latestIncomingTs: item.latestIncomingTs,
+            latestAnyMessageTs: item.latestAnyMessageTs,
+            timestamp: Number(item.trade.created_at || item.latestAnyMessageTs || Math.floor(Date.now() / 1000)),
+            title: summarizeTradeNotification(item.trade, isNewTrade),
+            subtitle: `Trade #${shortTradeId(tradeId)} is now ${String(item.trade.status || 'updated')}.`,
+            tradeFingerprint: currentFingerprint,
+            isNewTrade,
+          })
+        }
+
+        if (notificationsHydrated && item.latestAnyMessageTs > seenMessageActivityTs && item.unreadCount === 0) {
+          const sentByCurrentUser = String(item.latestMessageSenderUid || '') === String(user.uid)
+          notificationItems.push({
+            kind: 'message-activity',
+            trade: item.trade,
+            unreadCount: 0,
+            latestIncomingTs: item.latestIncomingTs,
+            latestAnyMessageTs: item.latestAnyMessageTs,
+            timestamp: item.latestAnyMessageTs,
+            title: sentByCurrentUser ? 'Message sent' : 'New message',
+            subtitle: `Trade #${shortTradeId(tradeId)} has new message activity.`,
+            tradeFingerprint: currentFingerprint,
+          })
+        }
+
+        if (item.unreadCount > 0) {
+          notificationItems.push({
+            kind: 'message',
+            trade: item.trade,
+            unreadCount: item.unreadCount,
+            latestIncomingTs: item.latestIncomingTs,
+            latestAnyMessageTs: item.latestAnyMessageTs,
+            timestamp: item.latestIncomingTs,
+            title: item.unreadCount === 1 ? 'New message' : 'New messages',
+            subtitle: `Trade #${shortTradeId(tradeId)} has ${item.unreadCount} unread message${item.unreadCount === 1 ? '' : 's'}.`,
+            tradeFingerprint: currentFingerprint,
+          })
+        }
+      })
+
+      notificationsHydrated = true
+      persistSeenTradeState()
+      persistSeenMessageActivity()
+
+      const sortedItems = notificationItems.sort((a, b) => b.timestamp - a.timestamp)
+      const totalNotifications = sortedItems.reduce((sum, item) => sum + (item.kind === 'message' ? item.unreadCount : 1), 0)
+      render(sortedItems, totalNotifications)
+      desktopNotify(sortedItems)
+
+      const latestIncomingTrade = sortedItems.find((item) => {
+        if (item.kind !== 'trade' || !item.isNewTrade) return false
+        const trade = item.trade || {}
+        if (String(trade.creator_uid || '') === String(user.uid)) return false
+        const tradeId = String(trade.id || '')
+        if (!tradeId) return false
+        const seenTs = Number(popupNotifiedByTrade[tradeId] || 0)
+        return Number(item.timestamp || 0) > seenTs
+      })
+
+      if (latestIncomingTrade) {
+        const tradeId = String(latestIncomingTrade.trade.id)
+        popupNotifiedByTrade[tradeId] = Number(latestIncomingTrade.timestamp || Math.floor(Date.now() / 1000))
+        persistPopupNotified()
+        showIncomingTradePopupModal(latestIncomingTrade.trade)
+      }
     } finally {
       running = false
     }
@@ -386,6 +586,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       bellBtn.removeEventListener('click', onBellClick)
       document.removeEventListener('click', onDocumentClick)
       document.removeEventListener('open-chat', onOpenChat)
+      closeTradePopupModal()
       shell.remove()
     },
   }

@@ -1,0 +1,2 @@
+pub const ACTIVE_WINDOW_SECS: u64 = 60;
+pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 20;

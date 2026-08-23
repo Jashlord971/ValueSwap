@@ -2,6 +2,7 @@ use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
 use crate::models::{ResolveRecipientRequest, ResolveRecipientResponse, UpdateProfileRequest, UsernameEntry, UserProfile};
+use crate::presence::HEARTBEAT_MIN_INTERVAL_SECS;
 use crate::AppState;
 use axum::{extract::Path, routing::post, Json, Router};
 use rand::Rng;
@@ -31,9 +32,45 @@ static ANIMALS: &[&str] = &[
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/me", post(upsert_me).get(get_me).patch(update_me))
+        .route("/me/ping-active", post(ping_active))
         .route("/me/set-withdraw-code", post(set_withdraw_code))
         .route("/resolve", post(resolve_recipient))
         .route("/:uid", axum::routing::get(get_user_public))
+}
+
+async fn ping_active(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let path = format!("users/{}", ctx.user.uid);
+    let now = unix_now();
+
+    let Some(profile_val) = db.get(&path).await? else {
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "updated": false,
+            "reason": "profile_not_initialized"
+        })));
+    };
+
+    let last_active_at = profile_val
+        .get("last_active_at")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if now.saturating_sub(last_active_at) < HEARTBEAT_MIN_INTERVAL_SECS {
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "updated": false,
+            "last_active_at": last_active_at
+        })));
+    }
+
+    db.set(&format!("{}/last_active_at", path), &serde_json::json!(now)).await?;
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "updated": true,
+        "last_active_at": now
+    })))
 }
 
 #[derive(serde::Serialize)]
@@ -116,6 +153,7 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
         trade_count: 0,
         feedback_pos: 0,
         feedback_neg: 0,
+        last_active_at: 0,
     };
 
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
@@ -325,5 +363,3 @@ fn unix_now() -> u64 {
         .unwrap()
         .as_secs()
 }
-
-

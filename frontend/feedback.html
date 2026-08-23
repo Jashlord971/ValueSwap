@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap - Feedback</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <section class="section">
+      <h2 style="margin:0 0 0.5rem;">Latest Feedback</h2>
+
+      <div style="display:flex;gap:0.65rem;flex-wrap:wrap;margin:0 0 0.9rem;">
+        <button id="feedback-view-received" class="btn btn-success" type="button">Received</button>
+        <button id="feedback-view-given" class="btn btn-secondary" type="button">Given</button>
+      </div>
+
+      <p id="feedback-view-subtitle" class="muted" style="margin:0 0 0.9rem;">Recent feedback your trading partners have left for you.</p>
+
+      <div id="feedback-list" class="trade-cards-grid">
+        <p class="muted">Loading...</p>
+      </div>
+
+      <div id="feedback-pagination" style="display:flex;justify-content:flex-end;align-items:center;gap:0.6rem;margin-top:0.9rem;"></div>
+    </section>
+  </div>
+
+  <script type="module" src="/src/pages/feedback-page.js"></script>
+</body>
+</html>

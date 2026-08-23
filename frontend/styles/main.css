@@ -84,12 +84,42 @@ code {
 .nav-burger-btn {
   width: 36px;
   height: 36px;
-  border-radius: 999px;
+  position: relative;
   border: 1px solid var(--border);
   background: var(--surface);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+.avatar-presence-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.avatar-presence-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 999px;
+  border: 2px solid var(--card);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.avatar-presence-badge.presence-active {
+  background: #22c55e;
+}
+.avatar-presence-badge.presence-recent {
+  background: #eab308;
+}
+.avatar-presence-badge.presence-stale {
+  background: #ef4444;
+}
+.avatar-presence-badge.presence-offline {
+  background: #94a3b8;
+}
+.trade-detail-avatar-wrap {
+  width: 44px;
+  height: 44px;
+}
   justify-content: center;
 }
 
@@ -393,6 +423,55 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   margin-top: 0.5rem;
 }
 .confirm-modal-actions button { width: auto; padding: 0.55rem 1.4rem; }
+
+.feedback-rating-btn {
+  border: 2px solid transparent;
+  font-weight: 700;
+  color: #fff;
+  min-width: 138px;
+}
+
+.feedback-rating-positive {
+  background: #0f5132;
+}
+
+.feedback-rating-positive:hover:not(:disabled) {
+  background: #146c43;
+}
+
+.feedback-rating-negative {
+  background: #7a1f1f;
+}
+
+.feedback-rating-negative:hover:not(:disabled) {
+  background: #9a2626;
+}
+
+.feedback-rating-selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.feedback-rating-btn:not(.feedback-rating-selected) {
+  opacity: 0.68;
+}
+
+.feedback-rating-btn.feedback-rating-selected {
+  opacity: 1;
+}
+
+.feedback-sentiment {
+  color: #fff;
+}
+
+.feedback-sentiment-positive {
+  background: #166534;
+}
+
+.feedback-sentiment-negative {
+  background: #991b1b;
+}
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
 #toast-container {
@@ -1783,6 +1862,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   font-weight: 600;
 }
 
+.p2p-action-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+  font-weight: 700;
+}
+
 .p2p-action-btn-primary {
   background: #ffffff;
   color: #08131d;
@@ -1844,12 +1929,82 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   color: #6ee7b7;
 }
 
+.p2p-offer-coin-badge {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.p2p-offer-coin-badge-logo {
+  width: 1.3rem;
+  height: 1.3rem;
+  object-fit: contain;
+}
+
+.p2p-offer-coin-badge-fallback {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  letter-spacing: 0.03em;
+}
+
 .p2p-offer-trader-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.p2p-offer-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.p2p-offer-presence-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.2);
+}
+
+.p2p-offer-presence.is-active {
+  color: #34d399;
+}
+.p2p-offer-presence.is-recent {
+  color: #facc15;
+}
+.p2p-offer-presence.is-stale {
+  color: #f87171;
+}
+.p2p-offer-presence.is-offline {
+  color: #94a3b8;
+}
+
+.p2p-offer-presence.is-active .p2p-offer-presence-dot {
+  background: #34d399;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2);
+}
+.p2p-offer-presence.is-recent .p2p-offer-presence-dot {
+  background: #eab308;
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.24);
+}
+.p2p-offer-presence.is-stale .p2p-offer-presence-dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.22);
+}
+.p2p-offer-presence.is-offline .p2p-offer-presence-dot {
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.2);
 }
 
 .p2p-offer-body {
@@ -2298,11 +2453,41 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 
 .bubble-time {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.28rem;
+  width: 100%;
   font-size: 0.68rem;
   margin-top: 0.25rem;
   text-align: right;
+  opacity: 1;
+}
+
+.bubble-time-text {
+  display: inline-block;
   opacity: 0.65;
+}
+
+.chat-checks {
+  display: inline-block;
+  margin-left: 0;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  opacity: 1;
+  font-size: 0.72rem;
+}
+
+.chat-checks-delivered {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.chat-checks-read {
+  color: #c7f9ff;
+}
+
+.chat-checks-pending {
+  color: rgba(255, 255, 255, 0.62);
 }
 
 #chat-input-area {

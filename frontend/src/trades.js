@@ -6,10 +6,6 @@ import {
   toggleOfferStatus,
   listPaymentMethods,
   listCurrencies,
-  listSwapOffers,
-  createSwapOffer,
-  acceptSwapOffer,
-  cancelSwapOffer,
   listTrades,
 } from './api.js'
 import { cacheGet } from './cache.js'
@@ -26,18 +22,6 @@ export function initTrades(user) {
   loadMeta().then(() => {
     bindModal()
     loadMyOffers()
-  })
-}
-
-export function initSwapOffers(user) {
-  currentUser = user
-  loadMeta().then(() => {
-    bindSwapModal()
-    loadSwapMarketOffers()
-    loadMySwapOffers()
-    if (window.location.hash === '#swap') {
-      document.getElementById('swap-modal')?.classList.remove('hidden')
-    }
   })
 }
 
@@ -295,6 +279,10 @@ function resolveCurrencySelection() {
 
 function resetModal() {
   editingOfferId = null
+  const offerTypeInputs = document.querySelectorAll('input[name="offer-type"]')
+  offerTypeInputs.forEach((input) => {
+    input.disabled = false
+  })
   const buyRadio = document.querySelector('input[name="offer-type"][value="buy"]')
   if (buyRadio) buyRadio.checked = true
   document.getElementById('offer-card-search').value            = ''
@@ -320,6 +308,10 @@ function resetModal() {
 
 function openEditModal(offer) {
   editingOfferId = offer.id
+  const offerTypeInputs = document.querySelectorAll('input[name="offer-type"]')
+  offerTypeInputs.forEach((input) => {
+    input.disabled = true
+  })
   const radio = document.querySelector(`input[name="offer-type"][value="${offer.offer_type}"]`)
   if (radio) radio.checked = true
 
@@ -468,206 +460,6 @@ async function loadMyOffers() {
   } catch (e) {
     if (!cached) list.innerHTML = `<p class="error">Failed to load offers: ${e.message}</p>`
   }
-}
-
-async function loadMySwapOffers() {
-  const list = document.getElementById('swap-offers-list')
-  if (!list) return
-  list.innerHTML = '<div class="list-loading"><span class="list-spinner"></span>Loading swap offers…</div>'
-
-  try {
-    const mine = await listSwapOffers({ mine: true })
-    const onlyMine = mine.filter((o) => o.creator_uid === currentUser?.uid)
-    renderSwapOfferList(list, onlyMine)
-  } catch (e) {
-    list.innerHTML = `<p class="error">Failed to load swaps: ${e.message}</p>`
-  }
-}
-
-async function loadSwapMarketOffers() {
-  const list = document.getElementById('swap-market-list')
-  if (!list) return
-  list.innerHTML = '<div class="list-loading"><span class="list-spinner"></span>Loading market swaps…</div>'
-
-  try {
-    const offers = await listSwapOffers({ status: 'open' })
-    const market = offers
-      .filter((o) => o.creator_uid !== currentUser?.uid)
-      .sort((a, b) => b.created_at - a.created_at)
-
-    if (!market.length) {
-      list.innerHTML = '<p class="muted">No open market swap offers right now.</p>'
-      return
-    }
-
-    list.innerHTML = market.map((offer) => {
-      const from = String(offer.from_coin || '').toUpperCase()
-      const to = String(offer.to_coin || '').toUpperCase()
-      const makerGets = Number(offer.to_amount || 0)
-      const takerGets = Number(offer.from_amount || 0)
-      const profitPct = Number(offer.taker_profit_pct || 0)
-      return `
-        <div class="offer-card" style="margin-bottom:0.75rem">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
-            <div>
-              <strong>Swap ${esc(to)} → ${esc(from)}</strong>
-              <div class="muted" style="font-size:0.82rem">
-                You pay ${makerGets.toFixed(8)} ${esc(to)} and receive ${takerGets.toFixed(8)} ${esc(from)}
-              </div>
-              <div class="muted" style="font-size:0.82rem">Taker profit: ${profitPct.toFixed(2)}%</div>
-            </div>
-            <button class="btn-sm" data-accept-swap="${esc(offer.id)}">Accept Swap</button>
-          </div>
-        </div>
-      `
-    }).join('')
-
-    list.querySelectorAll('[data-accept-swap]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true
-        try {
-          await acceptSwapOffer(btn.getAttribute('data-accept-swap'))
-          showToast('Swap accepted', 'info')
-          await loadMySwapOffers()
-        } catch (e) {
-          showToast(`Error: ${e.message}`, 'error')
-          btn.disabled = false
-        }
-      })
-    })
-  } catch (e) {
-    list.innerHTML = `<p class="error">Failed to load market swaps: ${e.message}</p>`
-  }
-}
-
-function bindSwapModal() {
-  const modal = document.getElementById('swap-modal')
-  const openBtn = document.getElementById('btn-new-swap')
-  const closeBtn = document.getElementById('close-swap-modal')
-  const submit = document.getElementById('btn-submit-swap')
-
-  if (!modal || !openBtn || !closeBtn || !submit) return
-
-  openBtn.addEventListener('click', () => {
-    resetSwapModal()
-    modal.classList.remove('hidden')
-  })
-  closeBtn.addEventListener('click', () => modal.classList.add('hidden'))
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.classList.add('hidden')
-  })
-
-  submit.addEventListener('click', async () => {
-    const fromCoin = document.getElementById('swap-from-coin').value
-    const toCoin = document.getElementById('swap-to-coin').value
-    const fromAmount = parseFloat(document.getElementById('swap-from-amount').value)
-    const takerProfitPct = parseFloat(document.getElementById('swap-taker-profit').value)
-    const expiresInSecs = parseInt(document.getElementById('swap-expiry').value, 10)
-    const errEl = document.getElementById('swap-modal-error')
-
-    errEl.textContent = ''
-    if (!fromCoin || !toCoin) {
-      errEl.textContent = 'Choose both coins.'
-      return
-    }
-    if (fromCoin === toCoin) {
-      errEl.textContent = 'From and to coin must be different.'
-      return
-    }
-    if (!Number.isFinite(fromAmount) || fromAmount <= 0) {
-      errEl.textContent = 'Enter a valid amount to send.'
-      return
-    }
-    if (!Number.isFinite(takerProfitPct) || takerProfitPct < 0 || takerProfitPct > 50) {
-      errEl.textContent = 'Enter a valid taker profit between 0% and 50%.'
-      return
-    }
-
-    submit.disabled = true
-    try {
-      await createSwapOffer({
-        from_coin: fromCoin,
-        to_coin: toCoin,
-        from_amount: fromAmount,
-        taker_profit_pct: takerProfitPct,
-        expires_in_secs: expiresInSecs,
-      })
-      modal.classList.add('hidden')
-      await loadMySwapOffers()
-      showToast('Swap offer posted', 'info')
-    } catch (e) {
-      errEl.textContent = e.message
-    } finally {
-      submit.disabled = false
-    }
-  })
-}
-
-function resetSwapModal() {
-  const fromCoin = document.getElementById('swap-from-coin')
-  const toCoin = document.getElementById('swap-to-coin')
-  const fromAmount = document.getElementById('swap-from-amount')
-  const takerProfit = document.getElementById('swap-taker-profit')
-  const expiry = document.getElementById('swap-expiry')
-  const err = document.getElementById('swap-modal-error')
-  if (fromCoin) fromCoin.value = 'usdc'
-  if (toCoin) toCoin.value = 'eth'
-  if (fromAmount) fromAmount.value = ''
-  if (takerProfit) takerProfit.value = '2.5'
-  if (expiry) expiry.value = '3600'
-  if (err) err.textContent = ''
-}
-
-function renderSwapOfferList(list, offers) {
-  if (!offers.length) {
-    list.innerHTML = '<p class="muted">No swap offers yet — click <strong>Add Swap</strong> to create one.</p>'
-    return
-  }
-
-  list.innerHTML = offers
-    .sort((a, b) => b.created_at - a.created_at)
-    .map((offer) => {
-      const remainingFrom = offer.remaining_from_amount ?? offer.from_amount
-      const remainingTo = offer.remaining_to_amount ?? offer.to_amount
-      const status = String(offer.status || 'open').toLowerCase()
-      const isOpen = status === 'open'
-      return `
-        <div class="offer-card" style="margin-bottom:0.75rem">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
-            <div>
-              <strong>${esc(offer.from_coin.toUpperCase())}</strong> → <strong>${esc(offer.to_coin.toUpperCase())}</strong>
-              <div class="muted" style="font-size:0.82rem">
-                Total: ${Number(offer.from_amount).toFixed(8)} ${esc(offer.from_coin.toUpperCase())} for ${Number(offer.to_amount).toFixed(8)} ${esc(offer.to_coin.toUpperCase())}
-              </div>
-              <div class="muted" style="font-size:0.82rem">
-                Taker profit: ${Number(offer.taker_profit_pct || 0).toFixed(2)}%
-              </div>
-              <div class="muted" style="font-size:0.82rem">
-                Remaining: ${Number(remainingFrom).toFixed(8)} / ${Number(remainingTo).toFixed(8)}
-              </div>
-            </div>
-            <div style="display:flex;gap:0.5rem;align-items:center">
-              <span class="status-pill ${isOpen ? 'pill-active' : 'pill-inactive'}">${esc(status)}</span>
-              ${isOpen ? `<button class="btn-sm" data-cancel-swap="${esc(offer.id)}">Cancel</button>` : ''}
-            </div>
-          </div>
-        </div>
-      `
-    })
-    .join('')
-
-  list.querySelectorAll('[data-cancel-swap]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      btn.disabled = true
-      try {
-        await cancelSwapOffer(btn.getAttribute('data-cancel-swap'))
-        await loadMySwapOffers()
-      } catch (e) {
-        showToast(`Error: ${e.message}`, 'error')
-        btn.disabled = false
-      }
-    })
-  })
 }
 
 function sortMyOffers(offers) {

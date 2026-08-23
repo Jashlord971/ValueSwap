@@ -1,1 +1,13 @@
 node_modules
+
+# build output
+backend/target
+frontend/dist
+
+# secrets — never commit
+backend/.env
+.env
+serviceAccount.json
+
+# editor
+.vscode
