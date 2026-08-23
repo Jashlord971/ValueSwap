@@ -314,20 +314,17 @@ async fn broadcast_eth(
     eth_send_raw_tx(&state.http_client, &raw_tx).await
 }
 
-/// ABI-encodes the calldata for ERC-20 `transfer(address,uint256)`.
 fn erc20_transfer_data(to: &str, amount: u128) -> Vec<u8> {
     // Function selector: keccak256("transfer(address,uint256)")[0..4] = 0xa9059cbb
     let mut data = vec![0xa9u8, 0x05, 0x9c, 0xbb];
     let addr = hex::decode(to.trim_start_matches("0x")).unwrap_or_default();
-    data.extend_from_slice(&[0u8; 12]); // left-pad address to 32 bytes
+    data.extend_from_slice(&[0u8; 12]);
     data.extend_from_slice(&addr);
-    data.extend_from_slice(&[0u8; 16]); // left-pad u128 (16 bytes) to 32 bytes
+    data.extend_from_slice(&[0u8; 16]);
     data.extend_from_slice(&amount.to_be_bytes());
     data
 }
 
-/// Converts `u128` to the minimal big-endian bytes used in Ethereum RLP.
-/// Zero → empty vec, which RLP encodes as `0x80` (the canonical integer 0).
 fn uint_to_min_bytes(n: u128) -> Vec<u8> {
     if n == 0 {
         return vec![];
@@ -592,10 +589,7 @@ async fn broadcast_btc(
     Ok(resp.text().await.unwrap_or_default().trim().to_string())
 }
 
-async fn fetch_btc_utxos(
-    client: &reqwest::Client,
-    address: &str,
-) -> Result<Vec<BtcUtxo>, AppError> {
+async fn fetch_btc_utxos(client: &reqwest::Client, address: &str) -> Result<Vec<BtcUtxo>, AppError> {
     let url = format!("https://blockstream.info/api/address/{}/utxo", address);
     let resp: serde_json::Value = client
         .get(&url)
@@ -618,13 +612,7 @@ async fn fetch_btc_utxos(
         .collect())
 }
 
-async fn broadcast_trx(
-    state: &AppState,
-    seed: &[u8],
-    account_index: u32,
-    to: &str,
-    amount: f64,
-) -> Result<String, AppError> {
+async fn broadcast_trx(state: &AppState, seed: &[u8], account_index: u32, to: &str, amount: f64) -> Result<String, AppError> {
     let secp = Secp256k1::new();
     let path = format!("m/44'/195'/{}'/0/0", account_index);
     let ext = tiny_hderive::bip32::ExtendedPrivKey::derive(seed, path.as_str())
@@ -633,7 +621,6 @@ async fn broadcast_trx(
         .map_err(|e| AppError::Internal(format!("TRX secret key: {e}")))?;
     let pub_key = secret_key.public_key(&secp);
 
-    // Re-derive our TRX address (same logic as wallet init)
     let pub_bytes = pub_key.serialize_uncompressed();
     let mut k = Keccak::v256();
     let mut addr_hash = [0u8; 32];
@@ -649,7 +636,6 @@ async fn broadcast_trx(
 
     let sun = (amount * 1_000_000.0) as u64;
 
-    // Build unsigned transaction via TronGrid public node
     let create_resp: serde_json::Value = state
         .http_client
         .post("https://api.trongrid.io/wallet/createtransaction")
@@ -714,8 +700,6 @@ async fn broadcast_trx(
         .unwrap_or("unknown")
         .to_string())
 }
-
-// ── Validation helpers ────────────────────────────────────────────────────────
 
 fn validate_address(coin: &str, address: &str) -> Result<(), AppError> {
     match coin {

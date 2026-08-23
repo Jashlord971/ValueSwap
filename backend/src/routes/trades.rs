@@ -692,9 +692,9 @@ async fn lock_escrow(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) ->
     }
     let escrowed = read_f64_path(db, &esc_path).await?;
 
-    let mut updates = serde_json::Map::new();
-    updates.insert(bal_path, serde_json::json!(available - amount));
-    updates.insert(esc_path, serde_json::json!(escrowed + amount));
+    let mut updates: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    updates.insert(bal_path.to_string(), serde_json::json!(available - amount));
+    updates.insert(esc_path.to_string(), serde_json::json!(escrowed + amount));
     db.multi_path_update(updates).await
 }
 
@@ -709,9 +709,9 @@ async fn release_escrow_back(db: &RtdbClient<'_>, uid: &str, coin: &str, amount:
         return Err(AppError::Internal("Escrow underflow while releasing funds".into()));
     }
 
-    let mut updates = serde_json::Map::new();
-    updates.insert(bal_path, serde_json::json!(available + amount));
-    updates.insert(esc_path, serde_json::json!((escrowed - amount).max(0.0)));
+    let mut updates: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    updates.insert(bal_path.to_string(), serde_json::json!(available + amount));
+    updates.insert(esc_path.to_string(), serde_json::json!((escrowed - amount).max(0.0)));
     db.multi_path_update(updates).await
 }
 
@@ -732,10 +732,10 @@ async fn release_escrow_to_user(db: &RtdbClient<'_>, seller_uid: &str, winner_ui
     let fee = fee.clamp(0.0, amount);
     let payout = amount - fee;
 
-    let mut updates = serde_json::Map::new();
-    updates.insert(esc_path, serde_json::json!((escrowed - amount).max(0.0)));
-    updates.insert(win_bal_path, serde_json::json!(winner_bal + payout));
-    updates.insert(fee_path, serde_json::json!(fee_bal + fee));
+    let mut updates: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    updates.insert(esc_path.to_string(), serde_json::json!((escrowed - amount).max(0.0)));
+    updates.insert(win_bal_path.to_string(), serde_json::json!(winner_bal + payout));
+    updates.insert(fee_path.to_string(), serde_json::json!(fee_bal + fee));
     db.multi_path_update(updates).await
 }
 
