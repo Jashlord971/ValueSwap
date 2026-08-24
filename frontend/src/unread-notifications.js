@@ -18,7 +18,7 @@ function writeJson(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value))
   } catch {
-    // Ignore storage quota/private mode errors.
+
   }
 }
 
@@ -96,6 +96,51 @@ function showIncomingTradePopupModal(trade) {
   overlay.querySelector('#trade-popup-dismiss')?.addEventListener('click', closeTradePopupModal)
 }
 
+const TX_KIND_LABEL = {
+  internal_transfer: 'internal transfer',
+  deposit: 'on-chain deposit',
+  trade: 'trade payout',
+}
+
+function closeTransactionPopupModal() {
+  document.getElementById('transaction-popup-modal-overlay')?.remove()
+}
+
+function showIncomingTransactionPopupModal(tx) {
+  if (!tx?.id) return
+
+  closeTransactionPopupModal()
+  const overlay = document.createElement('div')
+  overlay.id = 'transaction-popup-modal-overlay'
+  overlay.className = 'modal-overlay'
+  const amount = Number.isFinite(Number(tx.amount)) ? Number(tx.amount).toFixed(8) : '—'
+  const kindLabel = TX_KIND_LABEL[tx.kind] || tx.kind || 'transaction'
+
+  overlay.innerHTML = `
+    <div class="modal wallet-action-modal" style="max-width:460px;">
+      <div class="modal-header">
+        <h2>Money Received</h2>
+        <button class="btn-modal-close" aria-label="Close">✕</button>
+      </div>
+      <p class="muted" style="margin-top:0.6rem;">You just received a ${escapeHtml(kindLabel)}.</p>
+      <p style="margin-top:0.9rem;font-size:1.1rem;">
+        <strong>${amount} ${escapeHtml(tx.coin || '')}</strong>
+      </p>
+      <div class="confirm-modal-actions" style="margin-top:1rem;">
+        <button class="btn-cancel" id="transaction-popup-dismiss">Dismiss</button>
+        <a class="btn btn-success" id="transaction-popup-open" href="/transactions.html">View Transactions</a>
+      </div>
+    </div>
+  `
+
+  document.body.appendChild(overlay)
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeTransactionPopupModal()
+  })
+  overlay.querySelector('.btn-modal-close')?.addEventListener('click', closeTransactionPopupModal)
+  overlay.querySelector('#transaction-popup-dismiss')?.addEventListener('click', closeTransactionPopupModal)
+}
+
 function unreadLabel(total) {
   return total > 99 ? '99+' : String(total)
 }
@@ -129,7 +174,7 @@ function armAudioOnUserGesture() {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
       if (audioCtx.state === 'suspended') audioCtx.resume()
     } catch {
-      // Audio context may be unavailable in some browsers.
+
     }
   }, { once: true })
 }
@@ -154,7 +199,7 @@ function playTradeNotificationTone(kind = 'update') {
     osc.start(now)
     osc.stop(now + 0.2)
   } catch {
-    // Best-effort tone only.
+
   }
 }
 
@@ -204,7 +249,9 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   let running = false
   let creatorUnsub = null
   let ownerUnsub = null
-  let realtimeReady = false
+
+  let creatorReady = false
+  let ownerReady = false
   let creatorTrades = {}
   let ownerTrades = {}
   let knownTradeFingerprints = {}
@@ -222,7 +269,23 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     }
   }
 
+  function maybeShowIncomingTradePopup(trade) {
+    if (!trade?.id) return
+
+    if (String(trade.creator_uid || '') === String(user.uid)) return
+
+    if (String(trade.status || '').toLowerCase() !== 'open') return
+    const tradeId = String(trade.id)
+    const ts = Number(trade.created_at || Math.floor(Date.now() / 1000))
+    const seenTs = Number(popupNotifiedByTrade[tradeId] || 0)
+    if (ts <= seenTs) return
+    popupNotifiedByTrade[tradeId] = ts
+    persistPopupNotified()
+    showIncomingTradePopupModal(trade)
+  }
+
   function reconcileRealtimeTrades() {
+    const bothReady = creatorReady && ownerReady
     const merged = { ...creatorTrades, ...ownerTrades }
     const nextFingerprints = {}
     const events = []
@@ -232,8 +295,8 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       const fp = tradeFingerprint(trade)
       nextFingerprints[trade.id] = fp
 
+      if (!bothReady) return
       const prevFp = knownTradeFingerprints[trade.id]
-      if (!realtimeReady) return
       if (!prevFp) {
         events.push({ type: 'created', trade, previous: null })
         return
@@ -243,7 +306,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       }
     })
 
-    if (realtimeReady) {
+    if (bothReady) {
       Object.keys(knownTradeFingerprints).forEach((tradeId) => {
         if (nextFingerprints[tradeId]) return
         events.push({ type: 'removed', trade: { id: tradeId }, previous: null })
@@ -251,10 +314,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     }
 
     knownTradeFingerprints = nextFingerprints
-    if (!realtimeReady) {
-      realtimeReady = true
-      return
-    }
+    if (!bothReady) return
 
     let hadTradeChange = false
     events.forEach((evt) => {
@@ -262,6 +322,10 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       publishTradeRealtimeEvent(evt.type, evt.trade, evt.previous)
       if (evt.type === 'created' || evt.type === 'updated') {
         playTradeNotificationTone(evt.type)
+      }
+      if (evt.type === 'created') {
+
+        maybeShowIncomingTradePopup(evt.trade)
       }
     })
 
@@ -277,18 +341,57 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     const creatorQ = query(ref(db, 'trades'), orderByChild('creator_uid'), equalTo(user.uid))
     const ownerQ = query(ref(db, 'trades'), orderByChild('offer_owner_uid'), equalTo(user.uid))
 
-    const attach = (q, assign) => onValue(q, (snap) => {
-      const val = snap.val() || {}
-      const rows = {}
-      Object.entries(val).forEach(([id, t]) => {
-        rows[id] = { ...(t || {}), id: t?.id || id }
-      })
-      assign(rows)
-      reconcileRealtimeTrades()
-    })
+    const attach = (q, assign, markReady) => onValue(
+      q,
+      (snap) => {
+        const val = snap.val() || {}
+        const rows = {}
+        Object.entries(val).forEach(([id, t]) => {
+          rows[id] = { ...(t || {}), id: t?.id || id }
+        })
+        assign(rows)
+        markReady()
+        reconcileRealtimeTrades()
+      },
+      (err) => {
+        console.error('Trade realtime listener failed; falling back to polling only:', err)
+      },
+    )
 
-    creatorUnsub = attach(creatorQ, (rows) => { creatorTrades = rows })
-    ownerUnsub = attach(ownerQ, (rows) => { ownerTrades = rows })
+    creatorUnsub = attach(creatorQ, (rows) => { creatorTrades = rows }, () => { creatorReady = true })
+    ownerUnsub = attach(ownerQ, (rows) => { ownerTrades = rows }, () => { ownerReady = true })
+  }
+
+  function startTransactionWatch() {
+    armAudioOnUserGesture()
+    const db = getDatabase(getFirebaseApp())
+    let hydrated = false
+    const knownIds = new Set()
+
+    onValue(
+      ref(db, `transactions/${user.uid}`),
+      (snap) => {
+        const val = snap.val() || {}
+        const entries = Object.entries(val).map(([id, tx]) => ({ ...(tx || {}), id: tx?.id || id }))
+
+        if (!hydrated) {
+          entries.forEach((tx) => knownIds.add(tx.id))
+          hydrated = true
+          return
+        }
+
+        entries.forEach((tx) => {
+          if (knownIds.has(tx.id)) return
+          knownIds.add(tx.id)
+          if (tx.direction !== 'in') return
+          playTradeNotificationTone('created')
+          showIncomingTransactionPopupModal(tx)
+        })
+      },
+      (err) => {
+        console.error('Transaction realtime listener failed:', err)
+      },
+    )
   }
 
   function persistNotified() {
@@ -520,22 +623,9 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       render(sortedItems, totalNotifications)
       desktopNotify(sortedItems)
 
-      const latestIncomingTrade = sortedItems.find((item) => {
-        if (item.kind !== 'trade' || !item.isNewTrade) return false
-        const trade = item.trade || {}
-        if (String(trade.creator_uid || '') === String(user.uid)) return false
-        const tradeId = String(trade.id || '')
-        if (!tradeId) return false
-        const seenTs = Number(popupNotifiedByTrade[tradeId] || 0)
-        return Number(item.timestamp || 0) > seenTs
-      })
-
-      if (latestIncomingTrade) {
-        const tradeId = String(latestIncomingTrade.trade.id)
-        popupNotifiedByTrade[tradeId] = Number(latestIncomingTrade.timestamp || Math.floor(Date.now() / 1000))
-        persistPopupNotified()
-        showIncomingTradePopupModal(latestIncomingTrade.trade)
-      }
+      sortedItems
+        .filter((item) => item.kind === 'trade' && item.isNewTrade)
+        .forEach((item) => maybeShowIncomingTradePopup(item.trade))
     } finally {
       running = false
     }
@@ -573,6 +663,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   refresh()
   timer = setInterval(refresh, pollMs)
   startRealtimeTradeWatch()
+  startTransactionWatch()
 
   const api = {
     markRead,

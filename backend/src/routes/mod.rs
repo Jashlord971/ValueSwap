@@ -2,6 +2,7 @@ mod cards;
 mod chat;
 mod ocr;
 mod offers;
+mod swaps;
 mod trades;
 mod users;
 mod wallet;
@@ -26,6 +27,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .nest("/wallet", wallet::router().merge(withdrawal::router()))
         .nest("/trades", trades::router())
+        .nest("/swaps", swaps::router())
         .nest("/offers", offers::router())
         .nest("/cards", cards::router())
         .nest("/chat", chat::router())

@@ -15,12 +15,10 @@
 
   <div id="app">
 
-    <!-- ── Loading state ────────────────────────────────────── -->
     <div id="auth-loading" class="auth-loading">
       <span class="auth-spinner"></span>
     </div>
 
-    <!-- ── Auth ─────────────────────────────────────────────── -->
     <section id="auth-section" class="section card hidden">
       <h2>Welcome to CardSwap</h2>
       <p class="muted">Trade gift cards for crypto, securely.</p>
@@ -31,7 +29,6 @@
       <p id="auth-error" class="error"></p>
     </section>
 
-    <!-- ── Dashboard grid (shown after login) ──────────────── -->
     <div id="dashboard" class="hidden">
       <h1 class="dashboard-greeting" id="dashboard-greeting">Welcome back</h1>
       <div class="dashboard-grid">
@@ -42,16 +39,33 @@
           <div class="dash-desc">Browse offers and start crypto P2P trades</div>
         </a>
 
+        <a href="/swaps.html" class="dash-card">
+          <div class="dash-icon">🔀</div>
+          <div class="dash-label">Swaps</div>
+          <div class="dash-desc">Trade one crypto for another, instantly on the ledger</div>
+        </a>
+
+        <a href="/my-swaps.html" class="dash-card">
+          <div class="dash-icon">🧾</div>
+          <div class="dash-label">My Swaps</div>
+          <div class="dash-desc">Track your open and past swap offers</div>
+        </a>
 
         <a href="/wallet.html" class="dash-card">
           <div class="dash-icon">💰</div>
-          <div class="dash-label">My Wallet</div>
+          <div class="dash-label">Wallet</div>
           <div class="dash-desc">View balances, deposit &amp; withdraw</div>
+        </a>
+
+        <a href="/transactions.html" class="dash-card">
+          <div class="dash-icon">🧾</div>
+          <div class="dash-label">Transactions</div>
+          <div class="dash-desc">History of internal transfers, deposits &amp; trade payouts</div>
         </a>
 
         <a href="/offers.html" class="dash-card">
           <div class="dash-icon">📋</div>
-          <div class="dash-label">My P2P Crypto Offers</div>
+          <div class="dash-label">My Offers</div>
           <div class="dash-desc">Create and manage crypto-payment offers</div>
         </a>
 
@@ -83,6 +97,12 @@
           <div class="dash-icon">🤝</div>
           <div class="dash-label">Trade Partners</div>
           <div class="dash-desc">Manage both trusted and blocked trading partners</div>
+        </a>
+
+        <a href="/disputes.html" id="dash-disputes-card" class="dash-card hidden">
+          <div class="dash-icon">⚖️</div>
+          <div class="dash-label">Disputes<span id="dash-disputes-count"></span></div>
+          <div class="dash-desc">Review and resolve live trade disputes</div>
         </a>
 
       </div>

@@ -1,24 +1,3 @@
-//! Mnemonic encryption and on-chain (external) withdrawal.
-//!
-//! ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-//! KMS SWAP BOUNDARY
-//! Only `encrypt_mnemonic` and `decrypt_mnemonic` touch the plaintext
-//! mnemonic.  To migrate from a static AES key to Cloud KMS, replace
-//! only those two functions with your KMS SDK calls. Everything else
-//! in this file stays unchanged.
-//! ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-//!
-//! Storage layout (Firebase RTDB):
-//!   wallet_secrets/{uid}  →  { "enc": "<12-byte-nonce-hex>:<ciphertext+tag-hex>" }
-//!
-//! Suggested RTDB security rules for wallet_secrets:
-//!   "$uid": {
-//!     ".read":  "$uid === auth.uid",            // user sees their own blob (useless without server key)
-//!     ".write": "$uid === auth.uid && !data.exists()"  // create-once; server writes on init
-//!   }
-//!
-//! Platform flat fees (deducted from ledger before broadcast):
-//!   BTC  0.00005  |  ETH  0.001  |  USDT  1.0  |  USDC  1.0  |  TRX  1.0
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -37,7 +16,6 @@ use axum::{
 use bip39::Mnemonic;
 use rand::RngCore;
 use secp256k1::{Message, Secp256k1, SecretKey};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
@@ -45,10 +23,6 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/withdraw", post(withdraw_handler))
 }
 
-// ── Mnemonic storage helpers ──────────────────────────────────────────────────
-
-/// Encrypt the mnemonic and write it to `wallet_secrets/{uid}` in RTDB.
-/// Called exactly once per user inside `init_wallet`, before returning.
 #[allow(dead_code)]
 pub async fn store_mnemonic(
     db: &RtdbClient<'_>,
@@ -64,8 +38,6 @@ pub async fn store_mnemonic(
     .await
 }
 
-/// Read and decrypt the mnemonic for `uid`.
-/// Private key material lives in RAM only for the duration of the calling request.
 pub async fn load_mnemonic(
     db: &RtdbClient<'_>,
     uid: &str,
@@ -86,23 +58,6 @@ pub async fn load_mnemonic(
     decrypt_mnemonic(enc, key)
 }
 
-// ── Encryption primitives — KMS swap boundary ─────────────────────────────────
-//
-// Algorithm : AES-256-GCM
-// Key       : 32 bytes (from MNEMONIC_ENCRYPTION_KEY env var, 64-char hex)
-// Nonce     : 12 bytes, freshly generated per encryption with a CSPRNG
-// Auth tag  : 16 bytes, appended to ciphertext by the AEAD (tamper-evident)
-//
-// Stored format in RTDB:  "<24-char nonce hex>:<ciphertext+tag hex>"
-//
-// ┌─ To swap to AWS KMS ───────────────────────────────────────────────────┐
-// │ 1. encrypt_mnemonic → kms_client.encrypt(key_id, plaintext_bytes)     │
-// │    return base64(ciphertext_blob) instead of the nonce:ct format       │
-// │ 2. decrypt_mnemonic → kms_client.decrypt(ciphertext_blob)             │
-// │    parse base64, call KMS, return plaintext string                     │
-// │ 3. Everything else in this file is unchanged.                          │
-// └────────────────────────────────────────────────────────────────────────┘
-
 #[allow(dead_code)]
 fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
@@ -115,7 +70,6 @@ fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> 
         .encrypt(nonce, mnemonic.as_bytes())
         .map_err(|_| AppError::Internal("Mnemonic encryption failed".into()))?;
 
-    // "nonce_hex:ciphertext_hex"  — nonce is needed for decryption; safe to store alongside ct
     Ok(format!(
         "{}:{}",
         hex::encode(nonce_bytes),
@@ -136,7 +90,6 @@ fn decrypt_mnemonic(stored: &str, key: &[u8; 32]) -> Result<String, AppError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    // Generic error message — never leak "wrong key" vs "corrupted" to avoid oracle attacks
     let plaintext = cipher
         .decrypt(nonce, ciphertext.as_ref())
         .map_err(|_| AppError::Internal("Mnemonic decryption failed".into()))?;
@@ -145,15 +98,10 @@ fn decrypt_mnemonic(stored: &str, key: &[u8; 32]) -> Result<String, AppError> {
         .map_err(|_| AppError::Internal("Mnemonic UTF-8 decode failed".into()))
 }
 
-// ── Platform fees ─────────────────────────────────────────────────────────────
-
-const FEE_BTC: f64 = 0.00005; // ~3 sat/vbyte typical P2WPKH tx
-const FEE_ETH: f64 = 0.001; // covers 21 000 gas at ≈48 gwei
-const FEE_USDT: f64 = 1.0; // 1 USDT flat (gas paid by platform)
-const FEE_USDC: f64 = 1.0; // 1 USDC flat
-const FEE_TRX: f64 = 1.0; // 1 TRX flat
-
-// ── Withdraw handler ──────────────────────────────────────────────────────────
+const FEE_BTC: f64 = 0.00005;
+const FEE_ETH: f64 = 0.001;
+const FEE_USDT: f64 = 1.0;
+const FEE_USDC: f64 = 1.0;
 
 async fn withdraw_handler(
     State(state): State<Arc<AppState>>,
@@ -166,10 +114,6 @@ async fn withdraw_handler(
     Ok(Json(resp))
 }
 
-/// Core on-chain withdrawal logic — also called by the smart-send handler in wallet.rs.
-/// Validates the address, checks the ledger, decrypts the mnemonic, broadcasts the
-/// transaction, and debits the ledger.  The mnemonic lives in RAM only for the duration
-/// of this call and is never logged or serialised.
 pub async fn do_withdraw(
     db: &RtdbClient<'_>,
     state: &Arc<AppState>,
@@ -187,7 +131,6 @@ pub async fn do_withdraw(
     let fee = platform_fee(coin)?;
     let total = amount + fee;
 
-    // ── Check platform ledger balance ─────────────────────────────────────────
     let balance: LedgerBalance = db
         .get(&format!("balances/{}", uid))
         .await?
@@ -205,17 +148,13 @@ pub async fn do_withdraw(
         )));
     }
 
-    // ── Derive seed from master HD wallet ────────────────────────────────────
-    // Look up this user's account index (stored when their wallet was created).
-    // If not found (legacy pre-migration user), fall back to decrypting their
-    // per-user mnemonic from wallet_secrets.
     let seed_storage;
     let (seed, account_index): (&[u8], u32) =
         if let Some(idx_val) = db.get(&format!("wallet_indices/{}", uid)).await? {
             let index = idx_val.as_u64().unwrap_or(0) as u32;
             (&state.master_seed, index)
         } else {
-            // Legacy path: decrypt per-user mnemonic (index 0 = old fixed path)
+
             let mnemonic_str = load_mnemonic(db, uid, &state.mnemonic_key).await?;
             let mnemonic = Mnemonic::parse(&mnemonic_str)
                 .map_err(|e| AppError::Internal(format!("Mnemonic parse failed: {e}")))?;
@@ -223,7 +162,6 @@ pub async fn do_withdraw(
             (&seed_storage, 0u32)
         };
 
-    // ── Broadcast on-chain transaction ────────────────────────────────────────
     let tx_hash = match coin {
         "eth" => broadcast_eth(state, seed, account_index, to_address, amount, None).await?,
         "usdt" => {
@@ -241,11 +179,9 @@ pub async fn do_withdraw(
             ).await?
         }
         "btc" => broadcast_btc(state, seed, account_index, to_address, amount).await?,
-        "trx" => broadcast_trx(state, seed, account_index, to_address, amount).await?,
         _ => unreachable!(),
     };
 
-    // ── Debit ledger only after confirmed broadcast ───────────────────────────
     let new_balance = available - total;
     let mut updates = serde_json::Map::new();
     updates.insert(
@@ -259,6 +195,12 @@ pub async fn do_withdraw(
         uid, coin, amount, fee, to_address, tx_hash
     );
 
+    if let Err(e) = super::wallet::record_transaction(
+        db, uid, "withdrawal", "out", coin, amount, None, Some(to_address), Some(&tx_hash),
+    ).await {
+        tracing::warn!("Failed to record withdrawal transaction for {}: {}", uid, e);
+    }
+
     Ok(WithdrawResponse {
         tx_hash,
         coin: coin.to_string(),
@@ -267,8 +209,6 @@ pub async fn do_withdraw(
         fee_deducted: fee,
     })
 }
-
-// ── ETH / ERC-20 broadcast ────────────────────────────────────────────────────
 
 async fn broadcast_eth(
     state: &AppState,
@@ -283,7 +223,6 @@ async fn broadcast_eth(
     let secp = Secp256k1::new();
     let pub_key = secret_key.public_key(&secp);
 
-    // Derive our sending address for the nonce lookup
     let pub_bytes = pub_key.serialize_uncompressed();
     let mut k = Keccak::v256();
     let mut addr_hash = [0u8; 32];
@@ -293,11 +232,11 @@ async fn broadcast_eth(
 
     let nonce = eth_get_nonce(&state.http_client, &from_addr).await?;
     let gas_price = eth_get_gas_price(&state.http_client).await?;
-    let chain_id = 1u64; // Ethereum mainnet
+    let chain_id = 1u64;
 
     let (dest, value_wei, data, gas_limit) = if let Some(contract) = erc20_contract {
-        // ERC-20 transfer: send 0 ETH to the contract, encode transfer() in data
-        let token_units = (amount * 1_000_000.0) as u128; // USDT and USDC: 6 decimals
+
+        let token_units = (amount * 1_000_000.0) as u128;
         (
             contract.to_string(),
             0u128,
@@ -305,7 +244,7 @@ async fn broadcast_eth(
             100_000u64,
         )
     } else {
-        // Native ETH transfer
+
         let wei = (amount * 1e18) as u128;
         (to.to_string(), wei, vec![], 21_000u64)
     };
@@ -315,7 +254,7 @@ async fn broadcast_eth(
 }
 
 fn erc20_transfer_data(to: &str, amount: u128) -> Vec<u8> {
-    // Function selector: keccak256("transfer(address,uint256)")[0..4] = 0xa9059cbb
+
     let mut data = vec![0xa9u8, 0x05, 0x9c, 0xbb];
     let addr = hex::decode(to.trim_start_matches("0x")).unwrap_or_default();
     data.extend_from_slice(&[0u8; 12]);
@@ -334,14 +273,11 @@ fn uint_to_min_bytes(n: u128) -> Vec<u8> {
     b[start..].to_vec()
 }
 
-/// Strips leading zero bytes from signature components r and s for RLP encoding.
 fn strip_leading_zeros(b: &[u8]) -> Vec<u8> {
     let start = b.iter().position(|&x| x != 0).unwrap_or(b.len());
     b[start..].to_vec()
 }
 
-/// Signs and RLP-encodes an EIP-155 transaction, returning the `0x`-prefixed hex string
-/// ready to be passed to `eth_sendRawTransaction`.
 fn sign_eth_tx(
     secret_key: &SecretKey,
     nonce: u64,
@@ -355,7 +291,6 @@ fn sign_eth_tx(
     let to_bytes = hex::decode(to.trim_start_matches("0x"))
         .map_err(|_| AppError::BadRequest("Invalid 'to' address hex".into()))?;
 
-    // EIP-155 unsigned tx: [nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0]
     let gp_bytes   = uint_to_min_bytes(gas_price);
     let val_bytes  = uint_to_min_bytes(value);
     let data_vec   = data.to_vec();
@@ -367,11 +302,10 @@ fn sign_eth_tx(
     unsigned.append(&val_bytes);
     unsigned.append(&data_vec);
     unsigned.append(&chain_id);
-    unsigned.append(&0u64); // r = 0
-    unsigned.append(&0u64); // s = 0
+    unsigned.append(&0u64);
+    unsigned.append(&0u64);
     let pre_hash = unsigned.out();
 
-    // Keccak256(rlp) → sign
     let mut k = Keccak::v256();
     let mut hash = [0u8; 32];
     k.update(&pre_hash[..]);
@@ -383,12 +317,10 @@ fn sign_eth_tx(
         .sign_ecdsa_recoverable(&msg, secret_key)
         .serialize_compact();
 
-    // EIP-155 replay-protected v
     let v: u64 = chain_id * 2 + 35 + rec_id.to_i32() as u64;
     let r = strip_leading_zeros(&sig[..32]);
     let s = strip_leading_zeros(&sig[32..]);
 
-    // Signed tx: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
     let mut signed = rlp::RlpStream::new_list(9);
     signed.append(&nonce);
     signed.append(&gp_bytes);
@@ -460,7 +392,7 @@ async fn eth_send_raw_tx(client: &reqwest::Client, raw_tx: &str) -> Result<Strin
 struct BtcUtxo {
     txid: String,
     vout: u32,
-    value: u64, // satoshis
+    value: u64,
 }
 
 async fn broadcast_btc(
@@ -504,7 +436,7 @@ async fn broadcast_btc(
     }
 
     let send_sats: u64 = (amount * 1e8) as u64;
-    let fee_sats: u64 = 2000; // conservative: ~14 sat/vbyte for a 1-in 2-out P2WPKH tx
+    let fee_sats: u64 = 2000;
     let total_avail: u64 = utxos.iter().map(|u| u.value).sum();
 
     if total_avail < send_sats + fee_sats {
@@ -527,7 +459,7 @@ async fn broadcast_btc(
                 txid: Txid::from_str(&u.txid).unwrap(),
                 vout: u.vout,
             },
-            script_sig: ScriptBuf::new(), // empty for SegWit
+            script_sig: ScriptBuf::new(),
             sequence: Sequence::MAX,
             witness: Witness::new(),
         })
@@ -538,7 +470,7 @@ async fn broadcast_btc(
         script_pubkey: dest_addr.script_pubkey(),
     }];
     if change_sats > 546 {
-        // dust threshold — don't create unspendable outputs
+
         outputs.push(TxOut {
             value: Amount::from_sat(change_sats),
             script_pubkey: our_addr.script_pubkey(),
@@ -612,95 +544,6 @@ async fn fetch_btc_utxos(client: &reqwest::Client, address: &str) -> Result<Vec<
         .collect())
 }
 
-async fn broadcast_trx(state: &AppState, seed: &[u8], account_index: u32, to: &str, amount: f64) -> Result<String, AppError> {
-    let secp = Secp256k1::new();
-    let path = format!("m/44'/195'/{}'/0/0", account_index);
-    let ext = tiny_hderive::bip32::ExtendedPrivKey::derive(seed, path.as_str())
-        .map_err(|e| AppError::Internal(format!("TRX key derivation: {e:?}")))?;
-    let secret_key = SecretKey::from_slice(&ext.secret())
-        .map_err(|e| AppError::Internal(format!("TRX secret key: {e}")))?;
-    let pub_key = secret_key.public_key(&secp);
-
-    let pub_bytes = pub_key.serialize_uncompressed();
-    let mut k = Keccak::v256();
-    let mut addr_hash = [0u8; 32];
-    k.update(&pub_bytes[1..]);
-    k.finalize(&mut addr_hash);
-    let raw_addr = &addr_hash[12..];
-    let mut payload = vec![0x41u8];
-    payload.extend_from_slice(raw_addr);
-    let c1 = Sha256::digest(&payload);
-    let c2 = Sha256::digest(&c1);
-    payload.extend_from_slice(&c2[..4]);
-    let from_addr = bs58::encode(&payload).into_string();
-
-    let sun = (amount * 1_000_000.0) as u64;
-
-    let create_resp: serde_json::Value = state
-        .http_client
-        .post("https://api.trongrid.io/wallet/createtransaction")
-        .json(&serde_json::json!({
-            "owner_address": from_addr,
-            "to_address":    to,
-            "amount":        sun,
-        }))
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("TRX create tx network error: {e}")))?
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("TRX create tx parse error: {e}")))?;
-
-    if let Some(err) = create_resp.get("Error") {
-        return Err(AppError::Internal(format!("TRX build tx error: {err}")));
-    }
-
-    // Sign: SHA256(raw_data_bytes) → secp256k1 recoverable signature
-    let raw_data_hex = create_resp["raw_data_hex"]
-        .as_str()
-        .ok_or_else(|| AppError::Internal("TRX: missing raw_data_hex in response".into()))?;
-    let raw_data =
-        hex::decode(raw_data_hex).map_err(|e| AppError::Internal(format!("TRX raw_data decode: {e}")))?;
-
-    let hash: [u8; 32] = Sha256::digest(&raw_data).into();
-    let msg = Message::from_digest(hash);
-    let (rec_id, sig) = secp
-        .sign_ecdsa_recoverable(&msg, &secret_key)
-        .serialize_compact();
-    let mut sig_with_v = sig.to_vec();
-    sig_with_v.push(rec_id.to_i32() as u8);
-
-    // Broadcast signed transaction
-    let mut broadcast_body = create_resp.clone();
-    broadcast_body["signature"] = serde_json::json!([hex::encode(&sig_with_v)]);
-
-    let broadcast_resp: serde_json::Value = state
-        .http_client
-        .post("https://api.trongrid.io/wallet/broadcasttransaction")
-        .json(&broadcast_body)
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("TRX broadcast network error: {e}")))?
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("TRX broadcast parse error: {e}")))?;
-
-    if broadcast_resp["result"].as_bool() != Some(true) {
-        return Err(AppError::Internal(format!(
-            "TRX broadcast failed: {}",
-            broadcast_resp["message"]
-                .as_str()
-                .unwrap_or("unknown error")
-        )));
-    }
-
-    Ok(create_resp["txID"]
-        .as_str()
-        .or_else(|| create_resp["txid"].as_str())
-        .unwrap_or("unknown")
-        .to_string())
-}
-
 fn validate_address(coin: &str, address: &str) -> Result<(), AppError> {
     match coin {
         "eth" | "usdt" | "usdc" => {
@@ -715,20 +558,13 @@ fn validate_address(coin: &str, address: &str) -> Result<(), AppError> {
             }
         }
         "btc" => {
-            // Accept native SegWit (bc1), Legacy P2PKH (1), P2SH (3)
+
             if !address.starts_with("bc1")
                 && !address.starts_with('1')
                 && !address.starts_with('3')
             {
                 return Err(AppError::BadRequest(
                     "Invalid BTC address (must start with bc1, 1, or 3)".into(),
-                ));
-            }
-        }
-        "trx" => {
-            if !address.starts_with('T') || address.len() != 34 {
-                return Err(AppError::BadRequest(
-                    "Invalid TRX address (must start with T and be 34 chars)".into(),
                 ));
             }
         }
@@ -743,7 +579,6 @@ fn platform_fee(coin: &str) -> Result<f64, AppError> {
         "eth" => Ok(FEE_ETH),
         "usdt" => Ok(FEE_USDT),
         "usdc" => Ok(FEE_USDC),
-        "trx" => Ok(FEE_TRX),
         _ => Err(AppError::BadRequest(format!("Unknown coin: {}", coin))),
     }
 }
@@ -754,7 +589,6 @@ fn ledger_field(balance: &LedgerBalance, coin: &str) -> f64 {
         "eth" => balance.eth,
         "usdt" => balance.usdt,
         "usdc" => balance.usdc,
-        "trx" => balance.trx,
         _ => 0.0,
     }
 }

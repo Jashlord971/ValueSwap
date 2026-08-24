@@ -1,4 +1,4 @@
-// past-trades-page.js — entry point for past-trades.html
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
@@ -43,19 +43,23 @@ onAuthChange(async (user) => {
   await loadPastTrades()
 })
 
+function isTradeSettled(t) {
+  const status = String(t?.status || '').toLowerCase()
+  if (status === 'disputed') return !!t.dispute_resolved
+  return ['completed', 'cancelled', 'expired'].includes(status)
+}
+
 async function loadPastTrades() {
   const grid = document.getElementById('past-trades-list')
 
   const cached = cacheGet('trades')
   if (cached) {
-    const past = cached.filter(t => ['completed','cancelled','expired'].includes(t.status))
-    renderPastTrades(grid, past)
+    renderPastTrades(grid, cached.filter(isTradeSettled))
   }
 
   try {
-    const all  = await listTrades()
-    const past = all.filter(t => ['completed','cancelled','expired'].includes(t.status))
-    renderPastTrades(grid, past)
+    const all = await listTrades()
+    renderPastTrades(grid, all.filter(isTradeSettled))
   } catch (e) {
     if (!cached) grid.innerHTML = `<p class="error">Failed to load past trades: ${e.message}</p>`
   }

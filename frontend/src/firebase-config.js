@@ -1,5 +1,4 @@
-// Replace these values with your Firebase project's config
-// (Firebase console → Project settings → Your apps → SDK setup)
+
 export const firebaseConfig = {
   apiKey:            "AIzaSyCD3ZZHznRRWLQkwxNYWPGYdw-e6slTUo8",
   authDomain:        "cardswaphub.firebaseapp.com",

@@ -34,9 +34,4 @@ export const COINS = [
       { label: 'Ethereum', addrKey: 'eth_address' },
     ],
   },
-  {
-    id: 'trx', label: 'TRON', symbol: 'TRX', geckoId: 'tron',
-    logo: COIN_LOGOS.TRX,
-    networks: [{ label: 'TRON', addrKey: 'tron_address' }],
-  },
 ]

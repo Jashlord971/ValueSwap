@@ -1,4 +1,4 @@
-// settings-page.js — entry point for settings.html
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
@@ -15,11 +15,9 @@ initChat(firebaseApp)
 let currentProfile = null
 let pendingAvatarNumber = null
 
-// ── Preset avatars ────────────────────────────────────────────────────────────
 const DEFAULT_AVATAR_NUMBER = MIN_AVATAR_NUMBER
 const AVATARS = Array.from({ length: MAX_AVATAR_NUMBER }, (_, idx) => idx + 1)
 
-// ── Country list ───────────────────────────────────────────────────────────────
 const COUNTRIES = [
   'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina',
   'Armenia','Australia','Austria','Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados',
@@ -61,7 +59,6 @@ function populateCountrySelect(selected) {
   })
 }
 
-// ── Auth ───────────────────────────────────────────────────────────────────────
 onAuthChange(async (user) => {
   if (!user) { window.location.href = '/'; return }
 
@@ -91,7 +88,6 @@ onAuthChange(async (user) => {
   bindTradeSettings()
 })
 
-// ── View mode ──────────────────────────────────────────────────────────────────
 function renderViewMode() {
   const p = currentProfile || {}
   setText('view-first-name', p.first_name || '—')
@@ -113,7 +109,6 @@ function setVal(id, val) {
   if (el) el.value = val
 }
 
-// ── Edit / cancel / view toggle ────────────────────────────────────────────────
 function showEditMode() {
   pendingAvatarNumber = null
 
@@ -157,7 +152,6 @@ function bindForm() {
   })
   document.getElementById('btn-signout-settings').addEventListener('click', () => logOut())
 
-  // Avatar grid picker
   const grid = document.getElementById('avatar-grid')
   if (grid) {
     grid.addEventListener('click', (e) => {
@@ -175,7 +169,6 @@ function bindForm() {
   if (removeBtn) removeBtn.classList.add('hidden')
 }
 
-// ── Save ───────────────────────────────────────────────────────────────────────
 async function saveProfile() {
   const errEl = document.getElementById('profile-form-error')
   const btn   = document.getElementById('btn-save-profile')
@@ -221,7 +214,6 @@ async function saveProfile() {
   }
 }
 
-// ── Avatar ─────────────────────────────────────────────────────────────────────
 function renderAvatar(imgId, initialsId, avatarNumber, firstName, username) {
   const img      = document.getElementById(imgId)
   const initials = document.getElementById(initialsId)
@@ -251,7 +243,6 @@ function renderAvatarGrid(selected) {
   `).join('')
 }
 
-// ── Trade Settings ─────────────────────────────────────────────────────────────
 function renderTradeSettings() {
   const p = currentProfile || {}
 
@@ -276,7 +267,7 @@ function updateWithdrawCodeStatus(hasCode) {
 }
 
 function bindTradeSettings() {
-  // Release code toggle
+
   const releaseToggle = document.getElementById('toggle-release-code')
   if (releaseToggle) {
     releaseToggle.addEventListener('change', async () => {
@@ -292,7 +283,6 @@ function bindTradeSettings() {
     })
   }
 
-  // Off-chain send code toggle
   const withdrawToggle = document.getElementById('toggle-withdraw-code')
   if (withdrawToggle) {
     withdrawToggle.addEventListener('change', async () => {
@@ -308,7 +298,6 @@ function bindTradeSettings() {
     })
   }
 
-  // Confirmation code save
   const saveCodeBtn = document.getElementById('btn-save-withdraw-code')
   if (saveCodeBtn) {
     saveCodeBtn.addEventListener('click', async () => {
@@ -340,7 +329,6 @@ function bindTradeSettings() {
     })
   }
 
-  // Confirmation code remove
   const removeCodeBtn = document.getElementById('btn-remove-withdraw-code')
   if (removeCodeBtn) {
     removeCodeBtn.addEventListener('click', async () => {
@@ -359,8 +347,6 @@ function bindTradeSettings() {
   }
 }
 
-
-// ── Toast ──────────────────────────────────────────────────────────────────────
 function showToast(msg) {
   const c = document.getElementById('toast-container')
   if (!c) return

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardSwap — Swaps</title>
+  <link rel="stylesheet" href="/styles/main.css" />
+</head>
+<body>
+
+  <nav id="navbar">
+    <a href="/" class="logo">CardSwap</a>
+    <div id="nav-auth"></div>
+  </nav>
+
+  <div id="app">
+    <section class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0 0 0.35rem;">Swap Crypto</h2>
+          <p class="muted" style="margin:0;">Trade one coin for another directly on the ledger. A 1% fee applies. <a href="/my-swaps.html">View my swaps →</a></p>
+        </div>
+        <button id="btn-new-swap" class="btn-primary">New Swap Offer</button>
+      </div>
+
+      <div id="swaps-list" class="trade-cards-grid" style="margin-top:1.1rem;">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="/src/pages/swaps-page.js"></script>
+</body>
+</html>

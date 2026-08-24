@@ -100,7 +100,6 @@ pub struct WalletBalances {
     pub eth: f64,
     pub usdt: f64,
     pub usdc: f64,
-    pub trx: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -113,8 +112,6 @@ pub struct LedgerBalance {
     pub usdt: f64,
     #[serde(default)]
     pub usdc: f64,
-    #[serde(default)]
-    pub trx: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,6 +129,30 @@ pub struct TransferRecord {
     pub coin: String,
     pub amount: f64,
     pub timestamp: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Transaction {
+    pub id: String,
+    pub uid: String,
+
+    pub kind: String,
+
+    #[serde(default = "default_transaction_direction")]
+    pub direction: String,
+    pub coin: String,
+    pub amount: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterparty_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterparty_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_id: Option<String>,
+    pub created_at: u64,
+}
+
+fn default_transaction_direction() -> String {
+    "in".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,6 +210,32 @@ pub struct Trade {
     pub escrow_fee_amount: f64,
     #[serde(default)]
     pub escrow_released: bool,
+
+    #[serde(default)]
+    pub dispute_resolved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_winner_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_resolved_at: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_resolved_by_uid: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_raised_by_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_reason_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_reason_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub dispute_raised_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub cancel_reason: Option<String>,
@@ -234,10 +281,81 @@ pub struct CreateTradeRequest {
     pub coin: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SwapOffer {
+    pub id: String,
+    pub creator_uid: String,
+
+    pub from_coin: String,
+
+    pub to_coin: String,
+
+    pub from_amount: f64,
+
+    pub to_amount: f64,
+
+    pub fee_pct: f64,
+    pub status: SwapOfferStatus,
+    pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub taker_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub filled_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub cancelled_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SwapOfferStatus {
+    Open,
+    Filled,
+    Cancelled,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateSwapOfferRequest {
+    pub from_coin: String,
+    pub to_coin: String,
+    pub from_amount: f64,
+    pub to_amount: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LeaveTradeFeedbackRequest {
     pub positive: bool,
     pub comment: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisputeReasonCategory {
+    InvalidPaymentMethod,
+    Impersonation,
+    PaymentProblem,
+    PhishingOrScam,
+    Other,
+}
+
+impl DisputeReasonCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DisputeReasonCategory::InvalidPaymentMethod => "Invalid payment method",
+            DisputeReasonCategory::Impersonation => "User impersonating moderator or other party",
+            DisputeReasonCategory::PaymentProblem => "Problem with payment made",
+            DisputeReasonCategory::PhishingOrScam => "User is trying to phish and scam",
+            DisputeReasonCategory::Other => "Other",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DisputeTradeRequest {
+    pub reason_category: DisputeReasonCategory,
+    pub reason_text: String,
 }
 
 pub const FIAT_CURRENCIES: &[(&str, &str)] = &[
@@ -304,7 +422,7 @@ pub fn payment_methods() -> Vec<PaymentMethod> {
         ($($c:literal),+) => { Some(vec![$($c.to_string()),+]) }
     }
     vec![
-        // ── Gift Cards ──────────────────────────────────────────────────────────
+
         PaymentMethod { id: "moneypak".into(),          name: "MoneyPak".into(),                          method_type: GiftCard,     allowed_currencies: only!["USD"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "apple_gift_card".into(),   name: "Apple Gift Card".into(),                   method_type: GiftCard,     allowed_currencies: only!["USD","GBP","EUR","AUD","CAD","JPY","CNY","INR"], escrow_fee_pct: 0.05 },
         PaymentMethod { id: "google_play".into(),       name: "Google Play Gift Card".into(),             method_type: GiftCard,     allowed_currencies: only!["USD","GBP","EUR","AUD","CAD","INR","JPY"],       escrow_fee_pct: 0.05 },
@@ -323,7 +441,7 @@ pub fn payment_methods() -> Vec<PaymentMethod> {
         PaymentMethod { id: "vanilla_visa".into(),      name: "Vanilla Visa".into(),                      method_type: GiftCard,     allowed_currencies: only!["USD"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "nike".into(),              name: "Nike Gift Card".into(),                    method_type: GiftCard,     allowed_currencies: only!["USD","GBP","EUR","AUD"],                          escrow_fee_pct: 0.05 },
         PaymentMethod { id: "sephora".into(),           name: "Sephora Gift Card".into(),                 method_type: GiftCard,     allowed_currencies: only!["USD","CAD"],                                       escrow_fee_pct: 0.05 },
-        // ── Mobile Money ────────────────────────────────────────────────────────
+
         PaymentMethod { id: "mtn_momo".into(),          name: "MTN Mobile Money".into(),                  method_type: MobileApp,    allowed_currencies: only!["GHS"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "telecel_ghana".into(),     name: "Telecel Ghana".into(),                     method_type: MobileApp,    allowed_currencies: only!["GHS"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "airteltigo".into(),        name: "AirtelTigo Money".into(),                  method_type: MobileApp,    allowed_currencies: only!["GHS"],                                              escrow_fee_pct: 0.05 },
@@ -331,7 +449,7 @@ pub fn payment_methods() -> Vec<PaymentMethod> {
         PaymentMethod { id: "palmpay".into(),           name: "PalmPay".into(),                           method_type: MobileApp,    allowed_currencies: only!["NGN"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "kuda".into(),              name: "Kuda Bank".into(),                         method_type: MobileApp,    allowed_currencies: only!["NGN"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "mpesa".into(),             name: "M-Pesa".into(),                            method_type: MobileApp,    allowed_currencies: only!["KES"],                                              escrow_fee_pct: 0.05 },
-        // ── Mobile App Transfers ────────────────────────────────────────────────
+
         PaymentMethod { id: "paypal".into(),            name: "PayPal".into(),                            method_type: MobileApp,    allowed_currencies: None,                                                      escrow_fee_pct: 0.05 },
         PaymentMethod { id: "venmo".into(),             name: "Venmo".into(),                             method_type: MobileApp,    allowed_currencies: only!["USD"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "cash_app".into(),          name: "Cash App".into(),                          method_type: MobileApp,    allowed_currencies: only!["USD","GBP"],                                       escrow_fee_pct: 0.05 },
@@ -342,7 +460,7 @@ pub fn payment_methods() -> Vec<PaymentMethod> {
         PaymentMethod { id: "chime".into(),             name: "Chime".into(),                             method_type: MobileApp,    allowed_currencies: only!["USD"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "google_pay".into(),        name: "Google Pay".into(),                        method_type: MobileApp,    allowed_currencies: None,                                                      escrow_fee_pct: 0.05 },
         PaymentMethod { id: "apple_pay".into(),         name: "Apple Pay".into(),                         method_type: MobileApp,    allowed_currencies: None,                                                      escrow_fee_pct: 0.05 },
-        // ── Bank Transfers ──────────────────────────────────────────────────────
+
         PaymentMethod { id: "bank_ach".into(),          name: "Bank Transfer (ACH)".into(),               method_type: BankTransfer, allowed_currencies: only!["USD"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "bank_sepa".into(),         name: "Bank Transfer (SEPA)".into(),              method_type: BankTransfer, allowed_currencies: only!["EUR"],                                              escrow_fee_pct: 0.05 },
         PaymentMethod { id: "bank_fps".into(),          name: "Bank Transfer (Faster Payments)".into(),   method_type: BankTransfer, allowed_currencies: only!["GBP"],                                              escrow_fee_pct: 0.05 },
@@ -377,43 +495,43 @@ pub struct Offer {
     pub id: String,
     pub creator_uid: String,
     pub offer_type: OfferType,
-    /// Payment method ID (matches PaymentMethod.id)
+
     pub card: String,
-    /// ISO 4217 fiat currency code for this offer (e.g. "USD")
+
     #[serde(default)]
     pub currency: String,
-    /// Cryptocurrency being traded (e.g. "BTC", "ETH", "USDC")
+
     #[serde(default)]
     pub coin: String,
-    /// Sanitized trade terms supplied by the poster (max 500 chars)
+
     #[serde(default)]
     pub terms: String,
-    /// Profit percentage (-100 to 200)
+
     pub profit_pct: f64,
     pub status: OfferStatus,
-    /// Trade time limit in seconds. 900=15min, 1800=30min, 3600=1hr. Default 1800.
+
     #[serde(default = "default_time_limit")]
     pub time_limit_secs: u64,
     pub created_at: u64,
-    /// Positive feedback count (trade completed + upvote)
+
     #[serde(default)]
     pub feedback_pos: Option<u64>,
-    /// Negative feedback count (trade completed + downvote)
+
     #[serde(default)]
     pub feedback_neg: Option<u64>,
-    /// Minimum trade amount in offer currency (if set, USD equivalent must be >= $10)
+
     #[serde(default)]
     pub min_amount: Option<f64>,
-    /// Maximum trade amount in offer currency (if set, must be > min_amount)
+
     #[serde(default)]
     pub max_amount: Option<f64>,
-    /// Maximum amount of crypto available (auto-adjusted if user balance < required amount)
+
     #[serde(default)]
     pub max_amount_auto_adjusted: bool,
-    /// Which side is responsible for releasing crypto on-platform for this offer.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_releaser_side: Option<CryptoReleaserSide>,
-    /// Creator last active unix timestamp (seconds), attached for market rendering.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_last_active_at: Option<u64>,
 }
@@ -428,13 +546,13 @@ pub struct CreateOfferRequest {
     pub coin: String,
     pub terms: String,
     pub profit_pct: f64,
-    /// 900, 1800, or 3600. Defaults to 1800 if absent.
+
     #[serde(default = "default_time_limit")]
     pub time_limit_secs: u64,
-    /// Minimum trade amount in offer currency (optional, USD equivalent must be >= $10 if set)
+
     #[serde(default)]
     pub min_amount: Option<f64>,
-    /// Maximum trade amount in offer currency (optional, must be > min_amount if set)
+
     #[serde(default)]
     pub max_amount: Option<f64>,
 }
@@ -506,9 +624,28 @@ pub struct ChatMessage {
     pub sender_uid: String,
     pub text: Option<String>,
     pub image_url: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+
+    #[serde(default = "default_message_visibility")]
+    pub visibility: String,
+
+    #[serde(default)]
+    pub redacted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_by_uid: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_role: Option<String>,
+
+    #[serde(default)]
+    pub is_system: bool,
     pub created_at: u64,
+}
+
+pub fn default_message_visibility() -> String {
+    "everyone".to_string()
 }

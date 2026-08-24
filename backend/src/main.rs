@@ -2,6 +2,7 @@ mod auth;
 mod error;
 mod firebase;
 mod models;
+mod moderation;
 mod presence;
 mod routes;
 
@@ -194,7 +195,7 @@ async fn main() {
     tracing::info!("Offer rebalance cron enabled (every 5 minutes)");
 
     if run_internal_cron {
-        // ── Background cron: expire stale trades every 3 minutes ──────────────
+
         {
             let cron_state = state.clone();
             tokio::spawn(async move {
@@ -206,7 +207,6 @@ async fn main() {
             });
         }
 
-        // ── Background sweeper: move platform fees to treasury every 5 minutes
         {
             let sweep_state = state.clone();
             tokio::spawn(async move {

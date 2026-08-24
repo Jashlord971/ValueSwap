@@ -1,4 +1,4 @@
-// p2p-page.js — entry point for p2p.html
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig } from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
@@ -31,7 +31,6 @@ const COIN_TO_GECKO = {
   ETH: 'ethereum',
   USDT: 'tether',
   USDC: 'usd-coin',
-  TRX: 'tron',
 }
 
 onAuthChange(async (user) => {
@@ -91,7 +90,7 @@ async function loadMeta() {
       li.textContent = method.name || method.id
       pmList.appendChild(li)
     })
-  } catch { /* non-critical */ }
+  } catch {  }
 }
 
 async function loadOffers(query = {}) {
@@ -342,8 +341,8 @@ function getPaymentMethodEscrowFeePct(id) {
   return Number(paymentMethods.find((method) => method.id === id)?.escrow_fee_pct || 1)
 }
 
-async function getUsdPrices() {
-  if (usdPrices) return usdPrices
+async function getUsdPrices(forceRefresh = false) {
+  if (usdPrices && !forceRefresh) return usdPrices
   const ids = Object.values(COIN_TO_GECKO).join(',')
   try {
     const res = await fetch(`/api/wallet/prices?ids=${encodeURIComponent(ids)}`)
@@ -351,14 +350,12 @@ async function getUsdPrices() {
     usdPrices = await res.json()
     return usdPrices
   } catch {
-    return {}
+    return usdPrices || {}
   }
 }
 
 function marketOfferType() {
-  // selectedSide is the browsing user's intent as a would-be taker: "buy" means
-  // they want to acquire crypto, so they should see offers whose creator is
-  // selling crypto (offer_type="sell"), and vice versa.
+
   return selectedSide === 'buy' ? 'sell' : 'buy'
 }
 
@@ -404,7 +401,7 @@ function applyFilters() {
         return (profileCache.get(b.creator_uid)?.trade_count || 0) - (profileCache.get(a.creator_uid)?.trade_count || 0)
       }
       if (selectedSort === 'newest') return b.created_at - a.created_at
-      // default: reputation
+
       const aScore = (profileCache.get(a.creator_uid)?.feedback_pos || 0) - (profileCache.get(a.creator_uid)?.feedback_neg || 0)
       const bScore = (profileCache.get(b.creator_uid)?.feedback_pos || 0) - (profileCache.get(b.creator_uid)?.feedback_neg || 0)
       return bScore - aScore
@@ -643,7 +640,7 @@ async function startTrade(offerId) {
 
   modal.classList.remove('hidden')
 
-  const prices = await getUsdPrices()
+  let prices = await getUsdPrices()
 
   const updateBuyPreview = () => {
     if (!offer) {
@@ -686,7 +683,6 @@ async function startTrade(offerId) {
     const senderRole = selectedSide === 'buy' ? 'Counterparty releases crypto' : 'You release crypto'
     const receiverRole = selectedSide === 'buy' ? 'You receive crypto' : 'Counterparty receives crypto'
 
-    // crypto_amount represents locked gross crypto; recipient receives net after escrow fee.
   cryptoInput.dataset.rawAmount = String(grossCrypto)
   cryptoInput.value = `${formatCoinAmount(grossCrypto)} ${coin} (${formatUsd(targetNetCryptoUsd)})`
   breakdownEl.textContent = `${coin} at ${formatUsd(usdPrice)} gives net ${formatCoinAmount(netCrypto)} ${coin}.\nEscrow fee is ${formatCoinAmount(escrowFee)} ${coin}.`
@@ -707,15 +703,20 @@ async function startTrade(offerId) {
   const btn = document.getElementById('btn-confirm-trade')
   const handler = async () => {
     const fiatAmount = parseFloat(fiatInput.value)
-    const cryptoAmount = Number.parseFloat(cryptoInput.dataset.rawAmount || '')
     const coin = offerCoin
 
     errEl.textContent = ''
     if (Number.isNaN(fiatAmount) || fiatAmount <= 0) { errEl.textContent = 'Enter a valid fiat amount.'; return }
-    if (Number.isNaN(cryptoAmount) || cryptoAmount <= 0) { errEl.textContent = 'Enter a valid crypto amount.'; return }
 
     btn.disabled = true
     try {
+
+      prices = await getUsdPrices(true)
+      updateBuyPreview()
+
+      const cryptoAmount = Number.parseFloat(cryptoInput.dataset.rawAmount || '')
+      if (Number.isNaN(cryptoAmount) || cryptoAmount <= 0) { errEl.textContent = 'Enter a valid crypto amount.'; return }
+
       const { createTrade } = await import('../api.js')
       const trade = await createTrade({ offer_id: offerId, fiat_amount: fiatAmount, crypto_amount: cryptoAmount, coin })
       modal.classList.add('hidden')

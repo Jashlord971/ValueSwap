@@ -1,4 +1,4 @@
-// trusted-page.js — Trusted Partners management page
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'

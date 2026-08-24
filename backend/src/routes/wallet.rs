@@ -1,7 +1,7 @@
 use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{LedgerBalance, SendRequest, SmartSendRequest, SmartSendResponse, TransferRecord, WalletBalances, WalletInfo};
+use crate::models::{LedgerBalance, SendRequest, SmartSendRequest, SmartSendResponse, Transaction, TransferRecord, UsernameEntry, WalletBalances, WalletInfo};
 use crate::AppState;
 use axum::http::HeaderMap;
 use axum::{
@@ -102,6 +102,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/send", post(send_internal))
         .route("/smart-send", post(smart_send))
         .route("/claim-deposits", post(claim_deposits))
+        .route("/transactions", get(list_transactions))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -167,6 +168,43 @@ async fn get_ledger(ctx: Ctx) -> Result<Json<LedgerBalance>, AppError> {
     Ok(Json(balance))
 }
 
+pub async fn record_transaction(
+    db: &RtdbClient<'_>,
+    uid: &str,
+    kind: &str,
+    direction: &str,
+    coin: &str,
+    amount: f64,
+    counterparty_uid: Option<&str>,
+    counterparty_label: Option<&str>,
+    related_id: Option<&str>,
+) -> Result<(), AppError> {
+    let tx = Transaction {
+        id: uuid::Uuid::new_v4().to_string(),
+        uid: uid.to_string(),
+        kind: kind.to_string(),
+        direction: direction.to_string(),
+        coin: coin.to_uppercase(),
+        amount,
+        counterparty_uid: counterparty_uid.map(ToOwned::to_owned),
+        counterparty_label: counterparty_label.map(ToOwned::to_owned),
+        related_id: related_id.map(ToOwned::to_owned),
+        created_at: unix_now_secs(),
+    };
+    db.set(&format!("transactions/{}/{}", uid, tx.id), &serde_json::to_value(&tx).unwrap()).await
+}
+
+async fn list_transactions(ctx: Ctx) -> Result<Json<Vec<Transaction>>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let docs = db.get_collection(&format!("transactions/{}", ctx.user.uid)).await?;
+    let mut txs = docs
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Transaction>(v).ok())
+        .collect::<Vec<_>>();
+    txs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(Json(txs))
+}
+
 async fn faucet_credit(ctx: Ctx, headers: HeaderMap, Json(req): Json<FaucetRequest>) -> Result<Json<LedgerBalance>, AppError> {
     ensure_dev_or_admin(&ctx.state, &headers)?;
 
@@ -183,7 +221,6 @@ async fn faucet_credit(ctx: Ctx, headers: HeaderMap, Json(req): Json<FaucetReque
         "eth" => LedgerBalance { eth: current.eth + req.amount, ..current },
         "usdt" => LedgerBalance { usdt: current.usdt + req.amount, ..current },
         "usdc" => LedgerBalance { usdc: current.usdc + req.amount, ..current },
-        "trx" => LedgerBalance { trx: current.trx + req.amount, ..current },
         _ => unreachable!(),
     };
 
@@ -310,7 +347,7 @@ fn balance_updates(from_uid: &str, to_uid: &str, coin: &str, sender_new: f64, re
 }
 
 fn validate_coin(coin: &str) -> Result<(), AppError> {
-    const VALID: &[&str] = &["btc", "eth", "usdt", "usdc", "trx"];
+    const VALID: &[&str] = &["btc", "eth", "usdt", "usdc"];
     if VALID.contains(&coin) { Ok(()) } else { Err(AppError::BadRequest(format!("Invalid coin: {}", coin))) }
 }
 
@@ -342,7 +379,7 @@ async fn send_internal(ctx: Ctx, Json(req): Json<SendRequest>) -> Result<Json<Tr
         return Err(AppError::BadRequest("Cannot send to yourself".into()));
     }
 
-    let record = do_internal_transfer(&db, &user.uid, &recipient_uid, &coin, req.amount).await?;
+    let record = do_internal_transfer(&ctx.state, &user.uid, &recipient_uid, &coin, req.amount).await?;
     Ok(Json(record))
 }
 
@@ -371,7 +408,6 @@ fn compute_transfer(sender: &LedgerBalance, recipient: &LedgerBalance, coin: &st
         "eth"  => (sender.eth,  recipient.eth),
         "usdt" => (sender.usdt, recipient.usdt),
         "usdc" => (sender.usdc, recipient.usdc),
-        "trx"  => (sender.trx,  recipient.trx),
         _      => unreachable!(),
     };
     if sender_bal < amount {
@@ -421,13 +457,14 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
             let result = db.query_equal("wallets", wallet_field, identifier).await?;
             result.and_then(|v| v.as_object().and_then(|m| m.keys().next().cloned()))
         } else {
+
             let lower = identifier.to_lowercase();
-            let result = db.query_equal("users", "username", &lower).await?;
-            match result {
+            let result = db.get(&format!("usernames/{}", lower)).await?;
+            match result.and_then(|v| serde_json::from_value::<UsernameEntry>(v).ok()) {
                 None => {
                     return Err(AppError::NotFound(format!("User '{}' not found on this platform", identifier)))
                 }
-                Some(val) => val.as_object().and_then(|m| m.keys().next().cloned()),
+                Some(entry) => Some(entry.uid),
             }
         };
 
@@ -435,7 +472,7 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
         if uid == user.uid {
             return Err(AppError::BadRequest("Cannot send to yourself".into()));
         }
-        let record = do_internal_transfer(&db, &user.uid, &uid, &coin, req.amount).await?;
+        let record = do_internal_transfer(&ctx.state, &user.uid, &uid, &coin, req.amount).await?;
         Ok(Json(SmartSendResponse {
             transfer_type: "internal".to_string(),
             transfer: Some(record),
@@ -453,15 +490,23 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
     }
 }
 
-async fn do_internal_transfer(db: &RtdbClient<'_>, from_uid: &str, to_uid: &str, coin: &str, amount: f64) -> Result<TransferRecord, AppError> {
-    let sender_balance = fetch_ledger_balance(db, from_uid).await?;
-    let recipient_balance = fetch_ledger_balance(db, to_uid).await?;
+async fn do_internal_transfer(state: &AppState, from_uid: &str, to_uid: &str, coin: &str, amount: f64) -> Result<TransferRecord, AppError> {
+    let db = RtdbClient::new_admin(state);
+    let sender_balance = fetch_ledger_balance(&db, from_uid).await?;
+    let recipient_balance = fetch_ledger_balance(&db, to_uid).await?;
 
     let (sender_new, recipient_new) = compute_transfer(&sender_balance, &recipient_balance, coin, amount)?;
 
     db.multi_path_update(balance_updates(from_uid, to_uid, coin, sender_new, recipient_new)).await?;
 
-    let record = save_transfer_record(db, from_uid, to_uid, coin, amount).await?;
+    let record = save_transfer_record(&db, from_uid, to_uid, coin, amount).await?;
+
+    if let Err(e) = record_transaction(&db, to_uid, "internal_transfer", "in", coin, amount, Some(from_uid), None, Some(&record.id)).await {
+        tracing::warn!("Failed to record incoming transaction for {}: {}", to_uid, e);
+    }
+    if let Err(e) = record_transaction(&db, from_uid, "internal_transfer", "out", coin, amount, Some(to_uid), None, Some(&record.id)).await {
+        tracing::warn!("Failed to record outgoing transaction for {}: {}", from_uid, e);
+    }
 
     Ok(record)
 }
@@ -469,7 +514,7 @@ async fn do_internal_transfer(db: &RtdbClient<'_>, from_uid: &str, to_uid: &str,
 async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str) -> Result<(), AppError> {
     let wallet = fetch_wallet_info(db, uid).await?;
 
-    let (btc, eth_mainnet, eth_arb, usdt_mainnet, usdt_arb, usdc_mainnet, usdc_arb, trx) = tokio::join!(
+    let (btc, eth_mainnet, eth_arb, usdt_mainnet, usdt_arb, usdc_mainnet, usdc_arb) = tokio::join!(
         fetch_btc_balance(&state.http_client, &wallet.btc_address),
         fetch_eth_balance_from_rpc(&state.http_client, "https://cloudflare-eth.com", &wallet.eth_address),
         fetch_eth_balance_from_rpc(&state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address),
@@ -477,7 +522,6 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
         fetch_erc20_balance_from_rpc(&state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address, "0xFd086bC7CD5C481DCC9C85ebe478A1C0b69FCbb9", 6),
         fetch_erc20_balance_from_rpc(&state.http_client, "https://cloudflare-eth.com", &wallet.eth_address, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6),
         fetch_erc20_balance_from_rpc(&state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6),
-        fetch_trx_balance(&state.http_client, &wallet.tron_address),
     );
 
     let slots: &[(&str, &str, f64)] = &[
@@ -488,7 +532,6 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
         ("usdt_arb",     "usdt", usdt_arb.unwrap_or(0.0)),
         ("usdc_mainnet", "usdc", usdc_mainnet.unwrap_or(0.0)),
         ("usdc_arb",     "usdc", usdc_arb.unwrap_or(0.0)),
-        ("trx",          "trx",  trx.unwrap_or(0.0)),
     ];
 
     let watermarks_val = db.get(&format!("deposit_watermarks/{}", uid)).await?;
@@ -498,6 +541,7 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
 
     let mut ledger = fetch_ledger_balance(db, uid).await?;
     let mut multi_updates: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut new_deposits: Vec<(&str, &str, f64)> = Vec::new();
 
     for &(slot_key, coin, on_chain) in slots {
         let watermark = *watermarks.get(slot_key).unwrap_or(&0.0);
@@ -508,7 +552,6 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
                 "eth"  => { ledger.eth  += delta; ledger.eth  },
                 "usdt" => { ledger.usdt += delta; ledger.usdt },
                 "usdc" => { ledger.usdc += delta; ledger.usdc },
-                "trx"  => { ledger.trx  += delta; ledger.trx  },
                 _ => continue,
             };
             watermarks.insert(slot_key.to_string(), on_chain);
@@ -520,11 +563,18 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
                 format!("balances/{}/{}", uid, coin),
                 serde_json::json!(new_bal),
             );
+            new_deposits.push((slot_key, coin, delta));
         }
     }
 
     if !multi_updates.is_empty() {
         db.multi_path_update(multi_updates).await?;
+        for (slot_key, coin, delta) in new_deposits {
+            let network_label = slot_key.replace('_', " ");
+            if let Err(e) = record_transaction(db, uid, "deposit", "in", coin, delta, None, Some(&network_label), None).await {
+                tracing::warn!("Failed to record deposit transaction for {}: {}", uid, e);
+            }
+        }
     }
     Ok(())
 }
@@ -543,7 +593,7 @@ async fn get_balances(ctx: Ctx) -> Result<Json<WalletBalances>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let wallet = fetch_wallet_info(&db, &ctx.user.uid).await?;
 
-    let (btc, eth_mainnet, eth_arbitrum, usdt_mainnet, usdt_arbitrum, usdc_mainnet, usdc_arbitrum, trx) = tokio::join!(
+    let (btc, eth_mainnet, eth_arbitrum, usdt_mainnet, usdt_arbitrum, usdc_mainnet, usdc_arbitrum) = tokio::join!(
         fetch_btc_balance(&ctx.state.http_client, &wallet.btc_address),
         fetch_eth_balance_from_rpc(&ctx.state.http_client, "https://cloudflare-eth.com", &wallet.eth_address),
         fetch_eth_balance_from_rpc(&ctx.state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address),
@@ -551,7 +601,6 @@ async fn get_balances(ctx: Ctx) -> Result<Json<WalletBalances>, AppError> {
         fetch_erc20_balance_from_rpc(&ctx.state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address, "0xFd086bC7CD5C481DCC9C85ebe478A1C0b69FCbb9", 6),
         fetch_erc20_balance_from_rpc(&ctx.state.http_client, "https://cloudflare-eth.com", &wallet.eth_address, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6),
         fetch_erc20_balance_from_rpc(&ctx.state.http_client, "https://arb1.arbitrum.io/rpc", &wallet.eth_address, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6),
-        fetch_trx_balance(&ctx.state.http_client, &wallet.tron_address),
     );
 
     Ok(Json(WalletBalances {
@@ -559,7 +608,6 @@ async fn get_balances(ctx: Ctx) -> Result<Json<WalletBalances>, AppError> {
         eth: eth_mainnet.unwrap_or(0.0) + eth_arbitrum.unwrap_or(0.0),
         usdt: usdt_mainnet.unwrap_or(0.0) + usdt_arbitrum.unwrap_or(0.0),
         usdc: usdc_mainnet.unwrap_or(0.0) + usdc_arbitrum.unwrap_or(0.0),
-        trx: trx.unwrap_or(0.0),
     }))
 }
 
@@ -664,13 +712,6 @@ async fn fetch_erc20_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, a
     Ok(raw as f64 / 10u128.pow(decimals) as f64)
 }
 
-async fn fetch_trx_balance(client: &reqwest::Client, address: &str) -> Result<f64, anyhow::Error> {
-    let url = format!("https://apilist.tronscan.org/api/account?address={}", address);
-    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
-    let sun = resp["balance"].as_u64().unwrap_or(0);
-    Ok(sun as f64 / 1e6)
-}
-
 pub async fn get_prices(Query(params): Query<HashMap<String, String>>, State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, AppError> {
     const STABLE_IDS: &[&str] = &["tether", "usd-coin"];
 
@@ -704,7 +745,6 @@ pub async fn get_prices(Query(params): Query<HashMap<String, String>>, State(sta
         }
     }
 
-    // Shared cross-instance cache (RTDB) — useful when multiple backend instances serve traffic.
     let shared_hits = read_shared_price_cache(&state, &requested, now).await;
     for (id, usd) in &shared_hits {
         if !result.contains_key(id) {
@@ -780,7 +820,6 @@ pub async fn get_prices(Query(params): Query<HashMap<String, String>>, State(sta
         ttl_secs
     );
 
-    // Best-effort write to shared cache so other instances can reuse fresh quotes.
     write_shared_price_cache(&state, &fresh_prices, now + ttl_secs).await;
 
     Ok(Json(value))
@@ -790,7 +829,6 @@ fn gecko_to_kraken(id: &str) -> Option<&'static str> {
     match id {
         "bitcoin" => Some("XXBTZUSD"),
         "ethereum" => Some("XETHZUSD"),
-        "tron" => Some("TRXUSD"),
         _ => None,
     }
 }
@@ -799,7 +837,6 @@ fn coin_to_gecko_id(coin: &str) -> Option<&'static str> {
     match coin {
         "btc" => Some("bitcoin"),
         "eth" => Some("ethereum"),
-        "trx" => Some("tron"),
         "usdt" => Some("tether"),
         "usdc" => Some("usd-coin"),
         _ => None,
@@ -928,5 +965,3 @@ pub async fn sweep_platform_fees_background(state: Arc<AppState>) {
         }
     }
 }
-
-

@@ -31,7 +31,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            // Never leak internal error details to clients
+
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (

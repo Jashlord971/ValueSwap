@@ -1,4 +1,4 @@
-/* ── Reset & base ──────────────────────────────────────────────────────────── */
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -24,7 +24,6 @@ body {
   line-height: 1.5;
 }
 
-/* ── Utilities ──────────────────────────────────────────────────────────────── */
 .hidden   { display: none !important; }
 .muted    { color: var(--muted); font-size: 0.9rem; }
 .error    { color: var(--danger); font-size: 0.875rem; margin-top: 0.4rem; }
@@ -38,7 +37,6 @@ code {
   font-size: 0.85em;
 }
 
-/* ── Navbar ─────────────────────────────────────────────────────────────────── */
 #navbar {
   display: flex;
   align-items: center;
@@ -126,7 +124,6 @@ code {
 .nav-burger-btn:hover {
   background: #132449;
 }
-
 
 .nav-burger-icon {
   width: 16px;
@@ -362,7 +359,6 @@ code {
 .nav-avatar-sm img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .nav-username-sm { font-size: 0.875rem; color: var(--muted); }
 
-/* ── App container ──────────────────────────────────────────────────────────── */
 #app {
   max-width: 900px;
   margin: 0 auto;
@@ -373,7 +369,6 @@ code {
   max-width: 1200px;
 }
 
-/* ── Sections / cards ───────────────────────────────────────────────────────── */
 .section { margin-bottom: 1.5rem; }
 
 .card {
@@ -389,8 +384,7 @@ code {
   margin-bottom: 1.25rem;
 }
 
-/* ── Buttons ────────────────────────────────────────────────────────────────── */
-button {
+button, .btn, .btn-sm {
   display: inline-block;
   cursor: pointer;
   padding: 0.6rem 1.2rem;
@@ -402,10 +396,11 @@ button {
   transition: background 0.15s, opacity 0.15s;
   background: var(--accent);
   color: #fff;
+  text-decoration: none;
 }
 
-button:hover:not(:disabled) { background: var(--accent-h); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:hover:not(:disabled), .btn:hover:not(:disabled), .btn-sm:hover:not(:disabled) { background: var(--accent-h); }
+button:disabled, .btn:disabled, .btn-sm:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .btn-secondary { background: var(--border); }
 .btn-secondary:hover:not(:disabled) { background: #162a50; }
@@ -473,7 +468,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: #991b1b;
 }
 
-/* ── Toast notifications ──────────────────────────────────────────────────── */
 #toast-container {
   position: fixed;
   bottom: 1.5rem;
@@ -518,7 +512,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .btn-sm { padding: 0.35rem 0.85rem; font-size: 0.875rem; }
 
-/* ── Auth loading spinner ───────────────────────────────────────────────────── */
 .auth-loading {
   display: flex;
   justify-content: center;
@@ -534,7 +527,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Inline list loading spinner ────────────────────────────────────────────── */
 .list-loading {
   display: flex;
   align-items: center;
@@ -552,7 +544,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   animation: spin 0.7s linear infinite;
 }
 
-/* ── Auth section ───────────────────────────────────────────────────────────── */
 #auth-section {
   max-width: 400px;
   margin: 5rem auto;
@@ -576,7 +567,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 #btn-signin, #btn-signup { width: 100%; margin-bottom: 0.5rem; }
 
-/* ── Wallet ─────────────────────────────────────────────────────────────────── */
 .wallet-grid {
   display: flex;
   flex-direction: column;
@@ -635,7 +625,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .wallet-usd { font-size: 0.8rem; color: var(--muted); }
 .btn-sm { font-size: 0.875rem; padding: 0.35rem 0.9rem; }
 
-/* ── Wallet action buttons ────────────────────────────────────────────────────── */
 .wallet-actions {
   display: flex;
   gap: 0.25rem;
@@ -650,7 +639,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .btn-wallet-action:hover { background: var(--accent); }
 
-/* ── Wallet action modals ────────────────────────────────────────────────────── */
 .wallet-action-modal {
   max-width: 460px;
   width: 100%;
@@ -687,7 +675,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .network-tab.active { background: var(--accent); color: #fff; }
 .network-tab:hover:not(.active) { background: #162a50; color: var(--text); }
 
-/* ── Send modal tabs ─────────────────────────────────────────────────────────── */
 .send-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .send-tab {
   background: var(--border);
@@ -721,7 +708,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   line-height: 1.5;
 }
 
-/* ── Generic form helpers (used in wallet send modal, etc.) ─────────────────── */
 .form-label {
   display: block;
   font-size: 0.8rem;
@@ -741,8 +727,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .form-input:focus { outline: none; border-color: var(--accent); }
 
-
-/* ── Modal (mnemonic) ───────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -791,7 +775,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 #btn-done-mnemonic { width: 100%; }
 
-/* ── Trade form ─────────────────────────────────────────────────────────────── */
 .form-grid {
   display: flex;
   flex-wrap: wrap;
@@ -819,7 +802,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .form-grid select:focus,
 .form-grid input:focus { outline: none; border-color: var(--accent); }
 
-/* ── Trade cards ────────────────────────────────────────────────────────────── */
 .trade-card {
   display: flex;
   align-items: center;
@@ -848,7 +830,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .badge-own { font-size: 0.8rem; color: var(--muted); margin-left: auto; }
 
-/* ── Offer cards ─────────────────────────────────────────────────────────────── */
 .tab-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1012,7 +993,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .field-hint { font-size: 0.78rem; color: var(--muted); font-weight: normal; }
 
-/* ── Offer modal ─────────────────────────────────────────────────────────────── */
 .offer-modal {
   max-width: 520px;
   border-color: var(--accent);
@@ -1064,7 +1044,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .radio-label input { accent-color: var(--accent); width: 16px; height: 16px; }
 
-/* ── Offers list ──────────────────────────────────────────────────────────────── */
 .offer-rows {
   display: flex;
   flex-direction: column;
@@ -1191,7 +1170,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .profit-pos { color: var(--success); font-weight: 600; }
 .profit-neg { color: var(--danger);  font-weight: 600; }
 
-/* ── Offer action menu (… button + dropdown) ─────────────────────────────────── */
 .offer-menu {
   position: relative;
   display: inline-block;
@@ -1252,7 +1230,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   white-space: nowrap;
 }
 
-/* ── Searchable select (payment method / currency pickers) ───────────────────── */
 .searchable-select {
   position: relative;
 }
@@ -1293,8 +1270,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-radius: 4px;
 }
 
-/* ── Chat ───────────────────────────────────────────────────────────────────── */
-/* ── Dashboard ──────────────────────────────────────────────────────────────── */
 .dashboard-greeting {
   font-size: 1.5rem;
   font-weight: 700;
@@ -1349,7 +1324,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   line-height: 1.4;
 }
 
-/* ── Page header (back link + title) ─────────────────────────────────────────── */
 .page-header {
   display: flex;
   align-items: center;
@@ -1371,7 +1345,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .back-link:hover { text-decoration: underline; }
 
-/* ── Settings page ────────────────────────────────────────────────────────────── */
 .settings-card { max-width: 640px; padding: 1.5rem; }
 .settings-card-header {
   display: flex;
@@ -1381,7 +1354,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .settings-card-header h2 { margin: 0; flex: 1; }
 
-/* Avatar */
 .avatar-wrap {
   width: 64px; height: 64px;
   border-radius: 50%;
@@ -1398,7 +1370,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .profile-view-header { display: flex; align-items: flex-start; gap: 1.25rem; margin-bottom: 0.5rem; }
 
-/* Avatar picker */
 .avatar-picker-col { display: flex; flex-direction: column; }
 .avatar-grid {
   display: flex;
@@ -1449,7 +1420,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   cursor: default;
 }
 
-/* Trade settings card */
 .trade-setting-row {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
   padding: 0.5rem 0;
@@ -1473,7 +1443,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   text-align: center;
 }
 
-/* Toggle switch */
 .toggle-switch { flex-shrink: 0; cursor: pointer; display: inline-flex; }
 .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .toggle-track {
@@ -1495,7 +1464,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .toggle-switch input:checked + .toggle-track .toggle-thumb { transform: translateX(20px); }
 
-/* User list (block / trusted) */
 .user-list {
   display: flex; flex-direction: column; gap: 0.5rem;
   min-height: 2.5rem;
@@ -1537,7 +1505,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .profile-view-header { flex-direction: column; align-items: center; }
 }
 
-/* ── P2P market ───────────────────────────────────────────────────────────────── */
 .p2p-app {
   max-width: 1200px;
   margin: 0 auto;
@@ -2145,7 +2112,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   }
 }
 
-/* ── Trade row (active trades) ───────────────────────────────────────────────── */
 .trade-row {
   display: flex;
   align-items: center;
@@ -2165,7 +2131,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .status-cancelled  { background: rgba(100,116,139,0.2); color: var(--muted); }
 .status-expired    { background: rgba(239,68,68,0.15);  color: var(--danger); }
 
-/* ── Trade cards grid ────────────────────────────────────────────────────────── */
 .trade-cards-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -2193,11 +2158,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   box-shadow: none;
 }
 
-/* Status badge colors */
 .status-completed { background: rgba(34, 197, 94, 0.15); color: var(--success); font-weight: 600; }
 .status-cancelled { background: rgba(239, 68, 68, 0.15); color: var(--danger); font-weight: 600; }
 .status-expired   { background: rgba(168, 85, 247, 0.15); color: #a855f7; font-weight: 600; }
 .status-open      { background: rgba(59, 130, 246, 0.15); color: #3b82f6; font-weight: 600; }
+.status-filled    { background: rgba(34, 197, 94, 0.15); color: var(--success); font-weight: 600; }
 
 .trade-card-header {
   display: flex;
@@ -2293,7 +2258,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-top: 1px solid var(--border);
 }
 
-/* ── Trade detail two-column layout ─────────────────────────────────────────── */
 .trade-layout {
   display: grid;
   grid-template-columns: 300px 1fr;
@@ -2319,7 +2283,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   }
 }
 
-/* ── Chat section header ─────────────────────────────────────────────────────── */
 .chat-section-header {
   display: flex;
   align-items: flex-start;
@@ -2327,7 +2290,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   margin-bottom: 0.75rem;
 }
 
-/* ── FAQ ─────────────────────────────────────────────────────────────────────── */
 .faq-item {
   border-bottom: 1px solid var(--border);
   padding: 0.75rem 0;
@@ -2363,13 +2325,32 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   scroll-behavior: smooth;
 }
 
-/* ── WhatsApp-style chat bubbles ──────────────────────────────────────────── */
 .chat-row {
   display: flex;
   margin-bottom: 0.5rem;
 }
 .chat-row-mine   { justify-content: flex-end; }
 .chat-row-theirs { justify-content: flex-start; }
+
+.chat-system-notice {
+  margin: 0.6rem auto;
+  max-width: 88%;
+  padding: 0.6rem 0.85rem;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  text-align: center;
+}
+.chat-system-notice-text {
+  font-size: 0.85rem;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.chat-system-notice-time {
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
 
 .chat-bubble {
   max-width: 72%;
@@ -2401,6 +2382,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .chat-bubble-mine .bubble-name { color: rgba(255,255,255,0.8); }
 
+.chat-bubble-moderator {
+  border-color: rgba(234, 179, 8, 0.45);
+  background: rgba(234, 179, 8, 0.08);
+}
+.chat-bubble-moderator .bubble-name { color: #eab308; }
+
 .bubble-text  { margin: 0; }
 .bubble-image {
   max-width: 100%;
@@ -2420,6 +2407,20 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   margin: 0.4rem 0 0.25rem;
   display: block;
   border: 1px solid rgba(255,255,255,0.15);
+}
+.chat-media-visibility {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.chat-media-visibility label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
 }
 .chat-input-row {
   display: flex;
@@ -2515,7 +2516,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   user-select: none;
 }
 
-/* ── OCR / Card scanner ─────────────────────────────────────────────────────── */
 #card-image-input { margin-bottom: 0.75rem; color: var(--muted); }
 
 #scan-result { margin-top: 1.25rem; }
@@ -2551,7 +2551,6 @@ details summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; mar
   color: var(--muted);
 }
 
-/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

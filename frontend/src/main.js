@@ -1,13 +1,11 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from './firebase-config.js'
 import { initAuth, onAuthChange, signInWithGoogle, logOut } from './auth.js'
-import { upsertUser, updateMyProfile, listOffers, listTrades } from './api.js'
+import { upsertUser, updateMyProfile, listOffers, listTrades, listDisputes } from './api.js'
 import { initChat } from './chat.js'
 import { avatarPathFromProfile } from './avatar.js'
 import { setupUnreadTradeNotifications } from './unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from './dev-balance-tools.js'
-
-// -- Bootstrap ------------------------------------------------------------------
 
 const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
@@ -27,8 +25,6 @@ function bindDashboardComingSoonCards() {
     })
   })
 }
-
-// -- Auth state -----------------------------------------------------------------
 
 onAuthChange(async (user) => {
   const authSection = document.getElementById('auth-section')
@@ -72,8 +68,8 @@ onAuthChange(async (user) => {
     authSection?.classList.add('hidden')
     dashboard?.classList.remove('hidden')
     bindDashboardComingSoonCards()
+    void revealDisputesCardIfModerator()
 
-    // Prefetch in background — warms the cache so subpages render instantly
     Promise.allSettled([
       listOffers(),
       listTrades(),
@@ -85,7 +81,18 @@ onAuthChange(async (user) => {
   }
 })
 
-// -- Sign-in button -------------------------------------------------------------
+async function revealDisputesCardIfModerator() {
+  const card = document.getElementById('dash-disputes-card')
+  if (!card) return
+  try {
+    const disputes = await listDisputes()
+    card.classList.remove('hidden')
+    const countEl = document.getElementById('dash-disputes-count')
+    if (countEl) countEl.textContent = disputes.length ? ` (${disputes.length})` : ''
+  } catch {
+
+  }
+}
 
 document.getElementById('btn-google-signin').addEventListener('click', async () => {
   const errEl = document.getElementById('auth-error')
@@ -96,8 +103,6 @@ document.getElementById('btn-google-signin').addEventListener('click', async () 
     if (e.code !== 'auth/popup-closed-by-user') errEl.textContent = e.message
   }
 })
-
-// -- Profile modal --------------------------------------------------------------
 
 function showProfileModal() {
   document.getElementById('profile-modal-overlay')?.remove()

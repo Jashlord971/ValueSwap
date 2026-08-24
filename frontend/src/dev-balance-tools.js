@@ -20,10 +20,10 @@ export function ensureDevBalanceTools() {
     btn.title = 'Set coin balance from USD value (dev only)'
 
     btn.addEventListener('click', async () => {
-      const coinRaw = window.prompt('Coin (btc, eth, usdt, usdc, trx):', 'btc')
+      const coinRaw = window.prompt('Coin (btc, eth, usdt, usdc):', 'btc')
       if (coinRaw == null) return
       const coin = coinRaw.trim().toLowerCase()
-      if (!['btc', 'eth', 'usdt', 'usdc', 'trx'].includes(coin)) {
+      if (!['btc', 'eth', 'usdt', 'usdc'].includes(coin)) {
         window.alert('Invalid coin')
         return
       }

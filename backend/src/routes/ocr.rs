@@ -15,7 +15,7 @@ async fn scan_image(
     Extension(_user): Extension<AuthUser>,
     Json(req): Json<OcrRequest>,
 ) -> Result<Json<OcrResponse>, AppError> {
-    // Guard against oversized payloads (base64 inflates by ~33 %, so 14 MB ≈ 10 MB decoded)
+
     if req.image_base64.len() > 14_000_000 {
         return Err(AppError::BadRequest(
             "Image too large; maximum is ~10 MB".into(),

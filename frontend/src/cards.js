@@ -18,7 +18,7 @@ async function handleScan() {
   result.innerHTML = '<p class="muted">Processing image…</p>'
 
   try {
-    // Convert image to base64 and strip the data-URL prefix
+
     const dataUrl    = await readAsDataURL(file)
     const base64Data = dataUrl.split(',')[1]
 
@@ -41,7 +41,6 @@ async function handleScan() {
       <div id="check-results"></div>
     `
 
-    // Check every detected number against the platform's card registry
     const checks = document.getElementById('check-results')
     for (const num of ocr.detected_numbers) {
       try {
@@ -52,7 +51,7 @@ async function handleScan() {
             ${check.count} time(s) on this platform — this card may already be used.</p>`
         }
       } catch {
-        // Non-critical — continue checking others
+
       }
     }
     if (!checks.innerHTML) {

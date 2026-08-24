@@ -1,7 +1,8 @@
 ﻿use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{CreateTradeRequest, LeaveTradeFeedbackRequest, Offer, Trade, TradeFeedback, TradeStatus, UserProfile};
+use crate::models::{CreateTradeRequest, DisputeTradeRequest, LeaveTradeFeedbackRequest, Offer, Trade, TradeFeedback, TradeStatus, UserProfile};
+use crate::moderation::is_moderator_email;
 use crate::AppState;
 use axum::{
     extract::Path,
@@ -27,6 +28,7 @@ struct ResolveDisputeRequest {
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_trades).post(create_trade))
+        .route("/disputes", get(list_disputes))
         .route("/:id", get(get_trade))
         .route("/:id/complete", post(complete_trade))
         .route("/:id/cancel", post(cancel_trade))
@@ -118,8 +120,8 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
     .ok_or_else(|| AppError::BadRequest("Invalid offer pricing configuration".into()))?;
 
     if req.crypto_amount + 1e-12 < required_locked {
-        return Err(AppError::BadRequest(format!("Insufficient crypto amount for this fiat value. Required at least {:.8} {}", 
-            required_locked, 
+        return Err(AppError::BadRequest(format!("Insufficient crypto amount for this fiat value. Required at least {:.8} {}",
+            required_locked,
             offer_coin
         )));
     }
@@ -161,6 +163,14 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
         escrow_locked_amount: req.crypto_amount,
         escrow_fee_amount: fee_amount,
         escrow_released: false,
+        dispute_resolved: false,
+        dispute_winner_uid: None,
+        dispute_resolved_at: None,
+        dispute_resolved_by_uid: None,
+        dispute_raised_by_uid: None,
+        dispute_reason_category: None,
+        dispute_reason_text: None,
+        dispute_raised_at: None,
         cancel_reason: None,
         feedback: vec![],
         creator_username: None,
@@ -188,14 +198,41 @@ async fn get_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
-        return Err(AppError::Forbidden("Not a party to this trade".into()));
+    let is_party = trade.creator_uid == ctx.user.uid || trade.offer_owner_uid == ctx.user.uid;
+    if !is_party {
+
+        let is_disputed = matches!(trade.status, TradeStatus::Disputed);
+        if !is_disputed || !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+            return Err(AppError::Forbidden("Not a party to this trade".into()));
+        }
     }
     if apply_effective_trade_status(&mut trade) {
         db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     }
     resolve_trade_usernames(&mut trade, &db).await;
     Ok(Json(trade))
+}
+
+async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+        return Err(AppError::Forbidden("Moderator access required".into()));
+    }
+
+    let docs = db.get_collection("trades").await?;
+    let mut trades = docs
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Trade>(v).ok())
+        .filter(|t| matches!(t.status, TradeStatus::Disputed) && !t.dispute_resolved)
+        .collect::<Vec<_>>();
+
+    trades.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    for trade in &mut trades {
+        resolve_trade_usernames(trade, &db).await;
+    }
+
+    Ok(Json(trades))
 }
 
 async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppError> {
@@ -215,9 +252,6 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>,
     }
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
-    }
-    if !matches!(trade.status, TradeStatus::Paid) {
-        return Err(AppError::BadRequest("Trade must be marked as paid before completion".into()));
     }
     if trade.creator_uid == trade.offer_owner_uid {
         return Err(AppError::BadRequest("Invalid trade participants".into()));
@@ -253,6 +287,20 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>,
     )
     .await?;
     trade.escrow_released = true;
+
+    if let Err(e) = super::wallet::record_transaction(
+        &db,
+        &buyer_uid_for_trade(&trade),
+        "trade",
+        "in",
+        &trade.coin,
+        trade.escrow_locked_amount - trade.escrow_fee_amount,
+        Some(&seller_uid_for_trade(&trade)),
+        None,
+        Some(&trade.id),
+    ).await {
+        tracing::warn!("Failed to record trade transaction for {}: {}", trade.id, e);
+    }
 
     trade.status = TradeStatus::Completed;
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
@@ -291,6 +339,9 @@ async fn cancel_trade(ctx: Ctx, Path(id): Path<String>, body: Option<Json<Cancel
     }
     if matches!(trade.status, TradeStatus::Completed | TradeStatus::Expired) {
         return Err(AppError::BadRequest("Cannot cancel a completed or expired trade".into()));
+    }
+    if trade.dispute_resolved {
+        return Err(AppError::BadRequest("Cannot cancel a trade whose dispute has already been resolved".into()));
     }
 
     if !trade.escrow_released {
@@ -384,7 +435,22 @@ async fn mark_paid(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
     Ok(Json(trade))
 }
 
-async fn dispute_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppError> {
+fn sanitize_dispute_text(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("Please explain the issue before submitting the dispute".into()));
+    }
+    if trimmed.chars().count() > 2000 {
+        return Err(AppError::BadRequest("Dispute explanation must be 2000 characters or fewer".into()));
+    }
+    let sanitized: String = trimmed
+        .chars()
+        .filter(|&c| c != '<' && c != '>' && c != '\0' && (c >= ' ' || c == '\n' || c == '\t'))
+        .collect();
+    Ok(sanitized)
+}
+
+async fn dispute_trade(ctx: Ctx, Path(id): Path<String>, Json(req): Json<DisputeTradeRequest>) -> Result<Json<Trade>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let val = db.get(&format!("trades/{}", id)).await?
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
@@ -401,9 +467,38 @@ async fn dispute_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, 
         return Err(AppError::BadRequest("Trade cannot be disputed in its current state".into()));
     }
 
+    let reason_text = sanitize_dispute_text(&req.reason_text)?;
+
     trade.status = TradeStatus::Disputed;
+    trade.dispute_raised_by_uid = Some(ctx.user.uid.clone());
+    trade.dispute_reason_category = Some(req.reason_category.label().to_string());
+    trade.dispute_reason_text = Some(reason_text.clone());
+    trade.dispute_raised_at = Some(unix_now());
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+
+    let raiser_label = fetch_username(&db, &ctx.user.uid).await
+        .map(|u| format!("@{}", u))
+        .unwrap_or_else(|| "A trade participant".to_string());
+    let notice_text = format!(
+        "Dispute in progress. {} raised this dispute — {}.\n\n{}",
+        raiser_label,
+        req.reason_category.label(),
+        reason_text,
+    );
+    if let Err(e) = super::chat::insert_dispute_notice(&db, &id, &ctx.user.uid, &notice_text).await {
+        tracing::warn!("Failed to post dispute notice to chat for trade {}: {}", id, e);
+    }
+
     Ok(Json(trade))
+}
+
+async fn fetch_username(db: &RtdbClient<'_>, uid: &str) -> Option<String> {
+    let v = db.get(&format!("users/{}", uid)).await.ok().flatten()?;
+    v.get("username")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<ResolveDisputeRequest>) -> Result<Json<Trade>, AppError> {
@@ -418,11 +513,14 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
         db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     }
 
-    if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
-        return Err(AppError::Forbidden("Not a party to this trade".into()));
+    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+        return Err(AppError::Forbidden("Moderator access required".into()));
     }
     if !matches!(trade.status, TradeStatus::Disputed) {
         return Err(AppError::BadRequest("Only disputed trades can be resolved".into()));
+    }
+    if trade.dispute_resolved {
+        return Err(AppError::BadRequest("This dispute has already been resolved".into()));
     }
     if req.winner_uid != trade.creator_uid && req.winner_uid != trade.offer_owner_uid {
         return Err(AppError::BadRequest("winner_uid must be one of the trade counterparties".into()));
@@ -434,9 +532,27 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
         )
         .await?;
         trade.escrow_released = true;
+
+        let other_party = if req.winner_uid == trade.creator_uid { &trade.offer_owner_uid } else { &trade.creator_uid };
+        if let Err(e) = super::wallet::record_transaction(
+            &db,
+            &req.winner_uid,
+            "trade",
+            "in",
+            &trade.coin,
+            trade.escrow_locked_amount - trade.escrow_fee_amount,
+            Some(other_party),
+            Some("dispute resolution"),
+            Some(&trade.id),
+        ).await {
+            tracing::warn!("Failed to record dispute-resolution transaction for {}: {}", trade.id, e);
+        }
     }
 
-    trade.status = TradeStatus::Completed;
+    trade.dispute_resolved = true;
+    trade.dispute_winner_uid = Some(req.winner_uid.clone());
+    trade.dispute_resolved_at = Some(unix_now());
+    trade.dispute_resolved_by_uid = Some(ctx.user.uid.clone());
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     Ok(Json(trade))
 }
@@ -457,9 +573,7 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
     }
-    if !matches!(trade.status, TradeStatus::Completed) {
-        return Err(AppError::BadRequest("Feedback is only available for completed trades".into()));
-    }
+    ensure_feedback_eligible(&trade, &ctx.user.uid)?;
     if trade.feedback.iter().any(|entry| entry.from_uid == ctx.user.uid) {
         return Err(AppError::BadRequest("You have already left feedback for this trade".into()));
     }
@@ -515,9 +629,7 @@ async fn edit_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTr
     if trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid {
         return Err(AppError::Forbidden("Not a party to this trade".into()));
     }
-    if !matches!(trade.status, TradeStatus::Completed) {
-        return Err(AppError::BadRequest("Feedback is only available for completed trades".into()));
-    }
+    ensure_feedback_eligible(&trade, &ctx.user.uid)?;
 
     let comment = sanitize_feedback_comment(&req.comment)?;
 
@@ -554,7 +666,7 @@ async fn edit_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTr
     Ok(Json(trade))
 }
 
-async fn find_existing_feedback_trade_for_offer(db: &RtdbClient<'_>, offer_id: &str, from_uid: &str, exclude_trade_id: Option<&str>) 
+async fn find_existing_feedback_trade_for_offer(db: &RtdbClient<'_>, offer_id: &str, from_uid: &str, exclude_trade_id: Option<&str>)
     -> Result<Option<String>, AppError> {
     let docs = db.get_collection("trades").await?;
 
@@ -668,7 +780,7 @@ fn contains_prohibited_feedback_content(input: &str) -> bool {
     normalized.contains("kill yourself")
 }
 
-async fn read_f64_path(db: &RtdbClient<'_>, path: &str) -> Result<f64, AppError> {
+pub(crate) async fn read_f64_path(db: &RtdbClient<'_>, path: &str) -> Result<f64, AppError> {
     Ok(db
         .get(path)
         .await?
@@ -676,7 +788,7 @@ async fn read_f64_path(db: &RtdbClient<'_>, path: &str) -> Result<f64, AppError>
         .unwrap_or(0.0))
 }
 
-async fn lock_escrow(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) -> Result<(), AppError> {
+pub(crate) async fn lock_escrow(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) -> Result<(), AppError> {
     let coin = coin.to_lowercase();
     let bal_path = format!("balances/{}/{}", uid, coin);
     let esc_path = format!("escrow_balances/{}/{}", uid, coin);
@@ -698,7 +810,7 @@ async fn lock_escrow(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) ->
     db.multi_path_update(updates).await
 }
 
-async fn release_escrow_back(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) -> Result<(), AppError> {
+pub(crate) async fn release_escrow_back(db: &RtdbClient<'_>, uid: &str, coin: &str, amount: f64) -> Result<(), AppError> {
     let coin = coin.to_lowercase();
     let bal_path = format!("balances/{}/{}", uid, coin);
     let esc_path = format!("escrow_balances/{}/{}", uid, coin);
@@ -755,7 +867,7 @@ async fn ensure_escrow_available_for_completion(db: &RtdbClient<'_>, seller_uid:
     Ok(())
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -813,9 +925,7 @@ async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {
 }
 
 fn seller_buyer_for_offer(offer: &Offer, taker_uid: &str) -> (String, String) {
-    // "Buy" offer: creator wants crypto, so the taker (who holds it) is the
-    // seller and the creator is the buyer. "Sell" offer: creator already
-    // holds the crypto and is the seller; the taker is the buyer.
+
     match offer.offer_type {
         crate::models::OfferType::Buy => (taker_uid.to_string(), offer.creator_uid.clone()),
         crate::models::OfferType::Sell => (offer.creator_uid.clone(), taker_uid.to_string()),
@@ -835,6 +945,20 @@ fn buyer_uid_for_trade(trade: &Trade) -> String {
         trade.offer_owner_uid.clone()
     } else {
         trade.creator_uid.clone()
+    }
+}
+
+fn ensure_feedback_eligible(trade: &Trade, uid: &str) -> Result<(), AppError> {
+    match trade.status {
+        TradeStatus::Completed => Ok(()),
+        TradeStatus::Disputed if trade.dispute_resolved => {
+            if trade.dispute_winner_uid.as_deref() == Some(uid) {
+                Ok(())
+            } else {
+                Err(AppError::BadRequest("Only the dispute winner can leave feedback for this trade".into()))
+            }
+        }
+        _ => Err(AppError::BadRequest("Feedback is only available for completed trades".into())),
     }
 }
 
@@ -881,7 +1005,6 @@ async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppEr
     let pair = match coin.as_str() {
         "BTC" => "XXBTZUSD",
         "ETH" => "XETHZUSD",
-        "TRX" => "TRXUSD",
         _ => {
             return Err(AppError::BadRequest(format!("Unsupported coin for pricing: {}", coin)));
         }

@@ -33,10 +33,14 @@ let initialized      = false
 let lastRenderedTradeId = null
 let lastRenderKey    = null
 let shouldScrollToBottom = false
-let readStatuses     = {}  // tradeId → last_read_at (unix seconds)
+let readStatuses     = {}
 let partnerReceiptStatus = { last_delivered_at: 0, last_read_at: 0 }
 let partnerPresence = { active: false, lastActiveAt: 0 }
 let tradeOpenInSync = true
+let pendingMediaType = null
+let pendingVisibility = 'everyone'
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024
+const MAX_MESSAGES_AFTER_DISPUTE = 10
 let authWatcherBound = false
 const markReadInFlight = new Map()
 let pollInFlight = false
@@ -46,7 +50,7 @@ let chatFirebaseApp = null
 let chatRealtimeActive = false
 let stopChatRealtimeListeners = null
 let presenceRecalcTimer = null
-// Maps server image URL → local object URL so the sender sees their image instantly
+
 const recentSentImages = new Map()
 const CLOSED_TRADE_STATUSES = new Set(['completed', 'cancelled', 'expired'])
 const EXPIRES_WITH_TIME_STATUSES = new Set(['open', 'pending'])
@@ -65,7 +69,6 @@ export function initChat(firebaseApp, uid) {
   if (initialized) return
   initialized = true
 
-  // Re-evaluate partner active/inactive status over time even without new DB events.
   if (!presenceRecalcTimer) {
     presenceRecalcTimer = setInterval(() => {
       if (!activeTradeId) return
@@ -121,7 +124,6 @@ export function initChat(firebaseApp, uid) {
     scheduleNextChatPoll()
   })
 
-  // Image placeholder click — reveal image and mark trade read
   const chatMessages = document.getElementById('chat-messages')
   if (chatMessages) {
     chatMessages.addEventListener('click', async (e) => {
@@ -131,13 +133,20 @@ export function initChat(firebaseApp, uid) {
       const tradeId = placeholder.dataset.tradeId
       if (!url || !tradeId) return
 
-      const img = document.createElement('img')
-      img.className = 'bubble-image'
-      img.alt = 'Shared image'
-      img.src = url
-      placeholder.replaceWith(img)
+      let media
+      if (placeholder.dataset.mediaType === 'video') {
+        media = document.createElement('video')
+        media.className = 'bubble-image'
+        media.src = url
+        media.controls = true
+      } else {
+        media = document.createElement('img')
+        media.className = 'bubble-image'
+        media.alt = 'Shared image'
+        media.src = url
+      }
+      placeholder.replaceWith(media)
 
-      // Update local cache and persist to DB
       const ts = Math.floor(Date.now() / 1000)
       readStatuses[tradeId] = ts
       markChatRead(tradeId).catch(() => {})
@@ -151,25 +160,59 @@ export function initChat(firebaseApp, uid) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
   })
 
-  // Show a local preview when an image file is selected
   document.addEventListener('change', (e) => {
     if (e.target.id !== 'chat-image-input') return
     const file = e.target.files[0]
-    console.log('[chat] image selected:', file?.name, file?.size, 'bytes')
+    console.log('[chat] file selected:', file?.name, file?.size, 'bytes', file?.type)
     const preview = document.getElementById('chat-image-preview')
-    console.log('[chat] preview element found:', !!preview)
     if (!preview) return
-    if (file) {
-      const localUrl = URL.createObjectURL(file)
-      preview.innerHTML = `<img src="${localUrl}" class="chat-image-preview-thumb" alt="Preview" />`
-      preview.dataset.localUrl = localUrl
-      console.log('[chat] local preview set:', localUrl)
-    } else {
-      preview.innerHTML = ''
-      if (preview.dataset.localUrl) URL.revokeObjectURL(preview.dataset.localUrl)
-      delete preview.dataset.localUrl
+
+    if (!file) {
+      clearMediaPreview(preview)
+      return
     }
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showAlert(`That file is too large. Attachments must be under ${Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB.`)
+      e.target.value = ''
+      clearMediaPreview(preview)
+      return
+    }
+
+    pendingMediaType = file.type.startsWith('video/') ? 'video' : 'image'
+    pendingVisibility = 'everyone'
+
+    const localUrl = URL.createObjectURL(file)
+    const mediaTag = pendingMediaType === 'video'
+      ? `<video src="${localUrl}" class="chat-image-preview-thumb" muted></video>`
+      : `<img src="${localUrl}" class="chat-image-preview-thumb" alt="Preview" />`
+
+    preview.innerHTML = `
+      ${mediaTag}
+      <div class="chat-media-visibility">
+        <label><input type="radio" name="chat-media-visibility" value="everyone" checked /> Visible to entire chat</label>
+        <label><input type="radio" name="chat-media-visibility" value="moderator_only" /> Only moderator can see this</label>
+      </div>`
+    preview.dataset.localUrl = localUrl
+    preview.querySelectorAll('input[name="chat-media-visibility"]').forEach((input) => {
+      input.addEventListener('change', () => { pendingVisibility = input.value })
+    })
   })
+}
+
+function clearMediaPreview(preview) {
+  preview.innerHTML = ''
+  if (preview.dataset.localUrl) URL.revokeObjectURL(preview.dataset.localUrl)
+  delete preview.dataset.localUrl
+  pendingMediaType = null
+  pendingVisibility = 'everyone'
+}
+
+function messagesSentSinceDisputeCount() {
+  if (String(activeTrade?.status || '') !== 'disputed') return 0
+  const raisedAt = Number(activeTrade?.dispute_raised_at || 0)
+  if (!raisedAt) return 0
+  return chatMessageCache.filter(m => m.sender_uid === currentUid && Number(m.created_at || 0) >= raisedAt).length
 }
 
 async function handleSend() {
@@ -180,38 +223,41 @@ async function handleSend() {
     syncChatInputState();
     return
   }
+  if (messagesSentSinceDisputeCount() >= MAX_MESSAGES_AFTER_DISPUTE) {
+    syncChatInputState()
+    return
+  }
 
   const textInput  = document.getElementById('chat-text')
   const fileInput  = document.getElementById('chat-image-input')
   const text       = textInput.value.trim()
-  const imageFile  = fileInput.files[0]
+  const mediaFile  = fileInput.files[0]
   let   imageUrl   = null
 
-  if (!text && !imageFile) return
+  if (!text && !mediaFile) return
 
   const btn = document.getElementById('btn-send-msg')
   btn.disabled = true
   try {
-    if (imageFile) {
-      // Grab the local object URL from the preview before clearing the input
+    const mediaType = pendingMediaType
+    const visibility = pendingVisibility
+    if (mediaFile) {
+
       const preview = document.getElementById('chat-image-preview')
       const localUrl = preview?.dataset.localUrl || null
-      console.log('[chat] compressing image:', imageFile.name)
-      imageUrl = await uploadChatImage(imageFile)
-      console.log('[chat] image ready, size:', Math.round(imageUrl.length / 1024), 'KB')
+      console.log('[chat] preparing media:', mediaFile.name, mediaType)
+      imageUrl = mediaType === 'video' ? await uploadChatVideo(mediaFile) : await uploadChatImage(mediaFile)
+      console.log('[chat] media ready, size:', Math.round(imageUrl.length / 1024), 'KB')
       if (localUrl) recentSentImages.set(imageUrl, localUrl)
     }
     console.log('[chat] sending message to backend, tradeId:', activeTradeId, 'imageUrl:', imageUrl)
-    await sendMessage(activeTradeId, text || null, imageUrl)
+    await sendMessage(activeTradeId, text || null, imageUrl, mediaFile ? mediaType : null, mediaFile ? visibility : null)
     console.log('[chat] message sent successfully')
     textInput.value  = ''
     fileInput.value  = ''
-    // Clear the image preview
+
     const preview = document.getElementById('chat-image-preview')
-    if (preview) {
-      preview.innerHTML = ''
-      delete preview.dataset.localUrl
-    }
+    if (preview) clearMediaPreview(preview)
     shouldScrollToBottom = true
     await loadMessages()
   } catch (e) {
@@ -270,7 +316,7 @@ function renderChatFromState() {
     .reduce((latest, m) => Math.max(latest, Number(m.created_at || 0)), 0)
   const hasUnreadIncoming = sorted.some(m => m.sender_uid !== currentUid && !Number(m.read_at || 0))
 
-  if (tradeOpenInSync && (hasUnreadIncoming || latestIncomingTs > Number(readStatuses[activeTradeId] || 0))) {
+  if (hasUnreadIncoming || latestIncomingTs > Number(readStatuses[activeTradeId] || 0)) {
     readStatuses[activeTradeId] = latestIncomingTs
     markAsReadSoon(activeTradeId, latestIncomingTs)
   }
@@ -350,9 +396,10 @@ function mergeMessagesById(existing, incoming) {
 
 function getPartnerUidForActiveTrade() {
   if (!activeTrade || !currentUid) return null
-  return activeTrade.creator_uid === currentUid
-    ? activeTrade.offer_owner_uid
-    : activeTrade.creator_uid
+  if (activeTrade.creator_uid === currentUid) return activeTrade.offer_owner_uid
+  if (activeTrade.offer_owner_uid === currentUid) return activeTrade.creator_uid
+
+  return null
 }
 
 function isTradeOpenStatus(status, expiresAt) {
@@ -530,26 +577,48 @@ function syncChatInputState() {
     return
   }
 
-  if (inputArea.querySelector('#btn-send-msg') && inputArea.querySelector('#chat-text') && inputArea.querySelector('#chat-image-preview')) return
+  const sentSinceDispute = messagesSentSinceDisputeCount()
+  const disputeLimitReached = sentSinceDispute >= MAX_MESSAGES_AFTER_DISPUTE
 
-  inputArea.innerHTML = `
-    <div id="chat-image-preview" class="chat-image-preview"></div>
-    <div class="chat-input-row">
-      <input id="chat-text" type="text" placeholder="Type a message…" autocomplete="off" />
-      <label class="file-btn" title="Attach image">
-        📎
-        <input id="chat-image-input" type="file" accept="image/*" class="hidden" />
-      </label>
-      <button id="btn-send-msg">Send</button>
-    </div>
-  `
+  if (disputeLimitReached) {
+    if (!inputArea.querySelector('[data-dispute-limit="true"]')) {
+      inputArea.innerHTML = `<p class="muted" data-dispute-limit="true" style="padding: 0.75rem 0; text-align: center;">You've reached the ${MAX_MESSAGES_AFTER_DISPUTE}-message limit after opening a dispute. A moderator will review this trade.</p>`
+    }
+    return
+  }
 
-  const sendBtn = document.getElementById('btn-send-msg')
-  const chatText = document.getElementById('chat-text')
-  if (sendBtn) sendBtn.addEventListener('click', handleSend)
-  if (chatText) chatText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
-  })
+  if (!(inputArea.querySelector('#btn-send-msg') && inputArea.querySelector('#chat-text') && inputArea.querySelector('#chat-image-preview'))) {
+    inputArea.innerHTML = `
+      <p id="chat-dispute-limit-hint" class="muted hidden" style="padding: 0 0 0.5rem; text-align: center; font-size: 0.82rem;"></p>
+      <div id="chat-image-preview" class="chat-image-preview"></div>
+      <div class="chat-input-row">
+        <input id="chat-text" type="text" placeholder="Type a message…" autocomplete="off" />
+        <label class="file-btn" title="Attach image or video">
+          📎
+          <input id="chat-image-input" type="file" accept="image/*,video/*" class="hidden" />
+        </label>
+        <button id="btn-send-msg">Send</button>
+      </div>
+    `
+
+    const sendBtn = document.getElementById('btn-send-msg')
+    const chatText = document.getElementById('chat-text')
+    if (sendBtn) sendBtn.addEventListener('click', handleSend)
+    if (chatText) chatText.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
+    })
+  }
+
+  const hint = document.getElementById('chat-dispute-limit-hint')
+  if (hint) {
+    if (String(activeTrade?.status || '') === 'disputed') {
+      const remaining = MAX_MESSAGES_AFTER_DISPUTE - sentSinceDispute
+      hint.textContent = `${remaining} message${remaining === 1 ? '' : 's'} remaining after dispute`
+      hint.classList.remove('hidden')
+    } else {
+      hint.classList.add('hidden')
+    }
+  }
 }
 
 function renderTradeEventCard() {
@@ -574,6 +643,40 @@ function renderTradeEventCard() {
     return `
       <div style="margin-top:1rem;padding:0.95rem 1rem;border-radius:12px;border:1px solid rgba(168,85,247,0.35);background:rgba(168,85,247,0.1);color:#a855f7;font-weight:600;">
         Trade expired. Chat is now closed.
+      </div>`
+  }
+
+  if (activeTrade.status === 'paid') {
+    return `
+      <div style="margin-top:1rem;padding:0.95rem 1rem;border-radius:12px;border:1px solid rgba(234,179,8,0.35);background:rgba(234,179,8,0.1);color:#eab308;font-weight:600;">
+        Your partner is verifying the payment and will be with you shortly.
+      </div>`
+  }
+
+  if (activeTrade.status === 'disputed') {
+
+    const raisedAt = Number(activeTrade.dispute_raised_at || 0)
+    const deadlineText = raisedAt > 0
+      ? ` (by ${new Date((raisedAt + 96 * 3600) * 1000).toLocaleString()})`
+      : ''
+    const resolvedNote = activeTrade.dispute_resolved
+      ? `<div style="margin-top:0.75rem;font-weight:700;">This dispute has been resolved by a moderator.</div>`
+      : ''
+    return `
+      <div style="margin-top:1rem;padding:0.95rem 1rem;border-radius:12px;border:1px solid rgba(239,68,68,0.35);background:rgba(239,68,68,0.1);">
+        <div style="color:var(--danger);font-weight:700;">Dispute in progress.</div>
+        <div style="margin-top:0.5rem;color:var(--text);">We will look to resolve the dispute within 96 hours of the claim being made${deadlineText}.</div>
+        <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid rgba(239,68,68,0.25);color:var(--text);">
+          <strong>Both parties: please add evidence</strong> here in the chat to help a moderator resolve this quickly. Good evidence includes:
+          <ul style="margin:0.4rem 0 0 1.1rem;padding:0;">
+            <li>A screen recording of the payment being sent (or not received)</li>
+            <li>Payment receipts or bank/app confirmation screenshots</li>
+            <li>Transaction IDs or reference numbers</li>
+            <li>Timestamps showing when payment was expected vs. sent</li>
+          </ul>
+          <div style="margin-top:0.5rem;font-size:0.85rem;">When attaching evidence, you can choose to show it to the entire chat or keep it visible to the moderator only. Each of you can send up to ${MAX_MESSAGES_AFTER_DISPUTE} messages after a dispute is opened, so make them count.</div>
+        </div>
+        ${resolvedNote}
       </div>`
   }
 
@@ -657,17 +760,49 @@ function terminalStatusLabel(trade) {
   return trade?.status || 'closed'
 }
 
+function resolveSenderDisplayName(msg) {
+  if (msg.sender_uid === currentUid) return 'You'
+  if (msg.sender_role === 'moderator') return 'Moderator'
+  if (activeTrade?.creator_uid === msg.sender_uid) return activeTrade.creator_username || msg.sender_uid.slice(0, 8)
+  if (activeTrade?.offer_owner_uid === msg.sender_uid) return activeTrade.offer_owner_username || msg.sender_uid.slice(0, 8)
+  return partnerUsername || msg.sender_uid.slice(0, 8)
+}
+
 function renderMessage(msg) {
   const time        = new Date(msg.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const isMe        = msg.sender_uid === currentUid
-  const displayName = isMe ? 'You' : (partnerUsername || msg.sender_uid.slice(0, 8))
+  const displayName = resolveSenderDisplayName(msg)
   const checksMarkup = isMe ? renderMessageChecks(msg) : ''
+  const modBubbleClass = (msg.sender_role === 'moderator' && !isMe) ? ' chat-bubble-moderator' : ''
+
+  if (msg.is_system) {
+
+    return `
+      <div class="chat-system-notice">
+        <div class="chat-system-notice-text">${escapeHtml(msg.text || '')}</div>
+        <div class="chat-system-notice-time">${time}</div>
+      </div>`
+  }
+
+  if (msg.redacted) {
+
+    return `
+      <div class="chat-row${isMe ? ' chat-row-mine' : ' chat-row-theirs'}">
+        <div class="chat-bubble${isMe ? ' chat-bubble-mine' : ' chat-bubble-theirs'}${modBubbleClass}">
+          ${!isMe ? `<span class="bubble-name">${escapeHtml(displayName)}</span>` : ''}
+          <p class="bubble-text muted">🔒 Evidence submitted — visible to the sender and a moderator only.</p>
+          <span class="bubble-time"><span class="bubble-time-text">${time}</span>${checksMarkup}</span>
+        </div>
+      </div>`
+  }
+
   return `
     <div class="chat-row${isMe ? ' chat-row-mine' : ' chat-row-theirs'}">
-      <div class="chat-bubble${isMe ? ' chat-bubble-mine' : ' chat-bubble-theirs'}">
+      <div class="chat-bubble${isMe ? ' chat-bubble-mine' : ' chat-bubble-theirs'}${modBubbleClass}">
         ${!isMe ? `<span class="bubble-name">${escapeHtml(displayName)}</span>` : ''}
         ${msg.text      ? `<p class="bubble-text">${escapeHtml(msg.text)}</p>` : ''}
         ${renderImagePart(msg, isMe)}
+        ${msg.visibility === 'moderator_only' && isMe ? '<p class="bubble-text muted" style="font-size:0.78rem;">🔒 Only visible to you and a moderator</p>' : ''}
         <span class="bubble-time"><span class="bubble-time-text">${time}</span>${checksMarkup}</span>
       </div>
     </div>`
@@ -704,25 +839,26 @@ function renderPartnerPresenceStatus() {
 
 function renderImagePart(msg, isMe) {
   if (!msg.image_url) return ''
-  // Sender always sees their own image. Receiver sees a placeholder until they click it.
+  const isVideo = msg.media_type === 'video'
+
   const lastRead = Number(readStatuses[msg.trade_id] || 0)
   const alreadyRead = isMe || Number(msg.read_at || 0) > 0 || Number(msg.created_at) <= lastRead
-  console.log('[chat] renderImagePart', { msgId: msg.id, isMe, alreadyRead, lastRead, created_at: msg.created_at })
+  console.log('[chat] renderImagePart', { msgId: msg.id, isMe, alreadyRead, lastRead, created_at: msg.created_at, isVideo })
   if (alreadyRead) {
-    // Use local object URL for recently sent images so the sender sees it instantly
+
     const src = (isMe && recentSentImages.get(msg.image_url)) || msg.image_url
-    console.log('[chat] rendering image, src is local?', src !== msg.image_url)
-    return `<img class="bubble-image" src="${src}" alt="Shared image" onload="this.style.background='none'" />`
+    return isVideo
+      ? `<video class="bubble-image" src="${src}" controls></video>`
+      : `<img class="bubble-image" src="${src}" alt="Shared image" onload="this.style.background='none'" />`
   }
-  return `<div class="bubble-image-placeholder" data-image-url="${encodeURIComponent(msg.image_url)}" data-trade-id="${escapeHtml(msg.trade_id)}">
+  return `<div class="bubble-image-placeholder" data-image-url="${encodeURIComponent(msg.image_url)}" data-trade-id="${escapeHtml(msg.trade_id)}" data-media-type="${isVideo ? 'video' : 'image'}">
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-    <span>Tap to view image</span>
+    <span>Tap to view ${isVideo ? 'video' : 'image'}</span>
   </div>`
 }
 
 async function uploadChatImage(file) {
-  // Compress image client-side and encode as base64 data URL — stored directly in RTDB.
-  // Max dimension 1024px, JPEG quality 0.72 to keep payload reasonable.
+
   const MAX_PX = 1024
   const QUALITY = 0.72
   return new Promise((resolve, reject) => {
@@ -751,7 +887,16 @@ async function uploadChatImage(file) {
   })
 }
 
-/** Prevent XSS in user-generated message text */
+async function uploadChatVideo(file) {
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = reject
+    reader.onload = (e) => resolve(e.target.result)
+    reader.readAsDataURL(file)
+  })
+}
+
 function escapeHtml(str) {
   return str
     .replace(/&/g, '&amp;')

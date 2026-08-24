@@ -148,9 +148,9 @@ fn ensure_payment_method_currency_allowed(pm: &PaymentMethod, currency: &str) ->
 fn validate_coin(coin: &str) -> Result<String, AppError> {
     let normalized = coin.trim().to_uppercase();
     match normalized.as_str() {
-        "BTC" | "ETH" | "TRX" | "USDT" | "USDC" => Ok(normalized),
+        "BTC" | "ETH" | "USDT" | "USDC" => Ok(normalized),
         _ => Err(AppError::BadRequest(format!(
-            "Unsupported coin: {}. Supported coins: BTC, ETH, TRX, USDT, USDC",
+            "Unsupported coin: {}. Supported coins: BTC, ETH, USDT, USDC",
             coin
         ))),
     }
@@ -251,10 +251,7 @@ fn offer_passes_market_filters(
 }
 
 fn inferred_crypto_releaser_side(offer_type: &OfferType) -> CryptoReleaserSide {
-    // "Buy crypto" means the creator wants to acquire crypto, so the taker
-    // (who holds it) releases it. "Sell crypto" means the creator already
-    // holds the crypto and releases it to the taker. This must match the
-    // "I want to Buy/Sell crypto" labels on the create-offer form.
+
     match offer_type {
         OfferType::Buy => CryptoReleaserSide::Taker,
         OfferType::Sell => CryptoReleaserSide::Maker,
@@ -429,11 +426,10 @@ async fn check_and_adjust_offer_balance(
         });
     };
 
-    // Get coin price to convert fiat to crypto required amount
     let coin_price_usd = fetch_coin_usd_price(state, coin).await?;
     let fiat_to_usd = convert_to_usd(state, 1.0, currency).await?;
     let escrow_fee_pct = payment_method_escrow_fee_pct(card_id);
-    
+
     let min_crypto_required = required_locked_crypto_for_fiat(
         min_fiat,
         fiat_to_usd,
@@ -452,7 +448,6 @@ async fn check_and_adjust_offer_balance(
     )
     .ok_or_else(|| AppError::BadRequest("Invalid max amount/price/profit configuration".into()))?;
 
-    // If user has 0 or less than min required, deactivate
     if crypto_balance < min_crypto_required {
         return Ok(BalanceAdjustmentResult {
             should_deactivate: true,
@@ -462,7 +457,7 @@ async fn check_and_adjust_offer_balance(
     }
 
     if crypto_balance < max_crypto_required {
-        // Reverse fee-aware formula to compute max fiat supported by available locked crypto.
+
         let escrow_rate = (escrow_fee_pct / 100.0).clamp(0.0, 0.95);
         let net_crypto_available = crypto_balance * (1.0 - escrow_rate);
         let multiplier = 1.0 + (profit_pct / 100.0);
@@ -472,7 +467,7 @@ async fn check_and_adjust_offer_balance(
         let adjusted_max_fiat = (net_crypto_available * coin_price_usd * multiplier) / fiat_to_usd;
         return Ok(BalanceAdjustmentResult {
             should_deactivate: false,
-            adjusted_max_amount: Some(adjusted_max_fiat.max(min_fiat)), // Ensure adjusted max >= min
+            adjusted_max_amount: Some(adjusted_max_fiat.max(min_fiat)),
             max_amount_auto_adjusted: true,
         });
     }
@@ -589,9 +584,6 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
             }
         }
 
-        // `side` is the browsing user's intent as a would-be taker: "buy" means
-        // they want to acquire crypto, so they should see offers whose creator
-        // is selling crypto (and vice versa) — the inverse of offer_type.
         let side = query.side.as_deref().map(|s| s.trim().to_lowercase());
         let desired_offer_type = match side.as_deref() {
             Some("buy") => Some(OfferType::Sell),
@@ -802,7 +794,6 @@ async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppEr
     let pair = match coin.as_str() {
         "BTC" => "XXBTZUSD",
         "ETH" => "XETHZUSD",
-        "TRX" => "TRXUSD",
         _ => {
             return Err(AppError::BadRequest(format!(
                 "Unsupported coin for market filtering: {}",
@@ -950,7 +941,6 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
 
     ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &offer.offer_type, Some(&id)).await?;
 
-    // Check balance and adjust for offers where maker releases crypto.
     let balance_db = RtdbClient::new(&state, &user.id_token);
     let balance_result = check_and_adjust_offer_balance(
         &balance_db,
@@ -978,7 +968,7 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
     offer.max_amount = balance_result.adjusted_max_amount.or(req.max_amount);
     offer.max_amount_auto_adjusted = balance_result.max_amount_auto_adjusted;
     offer.crypto_releaser_side = Some(crypto_releaser_side);
-    
+
     if balance_result.should_deactivate {
         offer.status = OfferStatus::Inactive;
     }
@@ -1129,7 +1119,7 @@ async fn convert_to_usd(state: &AppState, amount: f64, currency: &str) -> Result
         }
     }
     info!(currency, "USD exchange-rate provider failed");
-    
+
     Err(AppError::BadRequest(format!(
         "Unable to fetch USD exchange rate for {}. This currency may not be available through our exchange rate services. \
          Please check with support or use a different currency.",

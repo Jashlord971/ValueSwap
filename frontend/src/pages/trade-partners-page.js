@@ -59,7 +59,7 @@ async function resolvePartnerUid(inputValue) {
     const resolved = await resolveRecipient(value, '')
     if (resolved?.is_platform_user && resolved?.uid) return resolved
   } catch {
-    // fallback to raw value if it's already a uid
+
   }
 
   return { uid: value, username: value }

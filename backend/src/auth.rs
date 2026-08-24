@@ -31,14 +31,6 @@ pub struct AuthUser {
     pub id_token: String,
 }
 
-/// Combined extractor: gives a handler both the shared app state and the
-/// authenticated user in a single parameter instead of two.
-///
-/// ```rust
-/// async fn my_handler(ctx: Ctx) -> ... {
-///     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-/// }
-/// ```
 pub struct Ctx {
     pub state: Arc<AppState>,
     pub user: AuthUser,

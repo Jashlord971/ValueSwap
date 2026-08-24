@@ -1,6 +1,4 @@
-/// Thin wrapper around the Firebase Realtime Database REST API.
-/// All requests are authenticated with the end-user's Firebase ID token via
-/// the `?auth=` query parameter, so database security rules apply normally.
+
 use crate::AdminAccessTokenCache;
 use crate::error::AppError;
 use crate::AppState;
@@ -26,8 +24,6 @@ impl<'a> RtdbClient<'a> {
         }
     }
 
-    /// Uses service-account OAuth for server-side admin tasks. If unavailable,
-    /// falls back to FIREBASE_DATABASE_SECRET for legacy deployments.
     pub fn new_admin(state: &'a AppState) -> Self {
         Self {
             state,
@@ -51,7 +47,7 @@ impl<'a> RtdbClient<'a> {
     }
 
     async fn admin_access_token(&self) -> Result<String, AppError> {
-        // Legacy fallback for environments still using RTDB secrets.
+
         if !self.state.firebase_db_secret.trim().is_empty() {
             return Ok(self.state.firebase_db_secret.clone());
         }

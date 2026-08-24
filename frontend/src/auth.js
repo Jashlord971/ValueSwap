@@ -15,7 +15,7 @@ function clearAllCache() {
       if (k && k.startsWith('cs:')) keysToRemove.push(k)
     }
     keysToRemove.forEach(k => sessionStorage.removeItem(k))
-  } catch { /* ignore */ }
+  } catch {  }
 }
 
 let auth
@@ -78,7 +78,7 @@ async function pingPresenceNow(force = false) {
     })
     lastPresencePingAtMs = Date.now()
   } catch {
-    // Presence heartbeat is best effort and should not block UI flows.
+
   } finally {
     presencePingInFlight = false
   }
@@ -114,9 +114,8 @@ function stopPresenceHeartbeat() {
   lastPresencePingAtMs = 0
 }
 
-/** Returns a fresh Firebase ID token for the current user */
 export async function getIdToken() {
   const user = auth.currentUser
   if (!user) throw new Error('Not authenticated')
-  return user.getIdToken(/* forceRefresh= */ false)
+  return user.getIdToken( false)
 }

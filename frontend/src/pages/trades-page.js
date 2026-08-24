@@ -1,4 +1,4 @@
-// trades-page.js — entry point for trades.html (My Active Trades)
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
@@ -10,7 +10,6 @@ import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
-// Invalidate stale trades cache on page load to ensure usernames are fetched
 cacheInvalidate('trades')
 
 const firebaseApp = initializeApp(firebaseConfig)
@@ -59,7 +58,6 @@ onAuthChange(async (user) => {
   await ensurePaymentMethodNameMap()
   await loadTradesOverview()
 
-  // Auto-redirect to trade detail if ?trade=<id> is in the URL
   const tradeId = new URLSearchParams(window.location.search).get('trade')
   if (tradeId) {
     window.location.href = `/trade-detail.html?id=${tradeId}`
@@ -121,12 +119,18 @@ function paymentMethodDisplayName(raw) {
   return paymentMethodNameMap?.get(id.toLowerCase()) || prettifyPaymentMethodId(id)
 }
 
+function isTradeSettled(t) {
+  const status = String(t?.status || '').toLowerCase()
+  if (status === 'disputed') return !!t.dispute_resolved
+  return ['completed', 'cancelled', 'expired'].includes(status)
+}
+
 function consumeTrades(trades) {
   allTrades = Array.isArray(trades)
     ? Array.from(new Map(trades.filter((trade) => trade?.id).map((trade) => [trade.id, trade])).values())
     : []
-  activeTrades = allTrades.filter(t => !['completed', 'cancelled', 'expired'].includes(String(t.status || '').toLowerCase()))
-  pastTrades = allTrades.filter(t => ['completed', 'cancelled', 'expired'].includes(String(t.status || '').toLowerCase()))
+  activeTrades = allTrades.filter(t => !isTradeSettled(t))
+  pastTrades = allTrades.filter(t => isTradeSettled(t))
   refreshPastFilterOptions()
 }
 
@@ -170,7 +174,6 @@ function renderActiveTrades(grid, trades) {
     })
   })
 
-  // Start countdown ticks
   countdownTimer = setInterval(() => tickCountdowns(grid, trades), 1000)
 }
 
@@ -440,9 +443,7 @@ function buildPastTradeCard(t) {
 function buildTradeCard(t) {
   const isCreator      = currentUser && t.creator_uid === currentUser.uid
   const offerType      = String(t.offer_type || '').toLowerCase()
-  // offer_type is the offer owner's stated intent: "buy" means the offer
-  // owner wants crypto (so the taker/creator holds and sells it); "sell"
-  // means the offer owner holds and sells the crypto. Matches trade-detail-page.js.
+
   const isSeller       = (isCreator && offerType === 'buy') || (!isCreator && offerType === 'sell')
   const isBuyer        = !isSeller
   const partnerLabel   = isCreator ? 'Offer Owner' : 'Taker'
@@ -465,8 +466,10 @@ function buildTradeCard(t) {
   const isExpiring   = statusLower === 'open' || statusLower === 'pending'
   const timeLeft     = isExpiring ? timeLeftStr(t.expires_at) : 'No expiry after paid'
   const isCritical   = isExpiring && t.expires_at && (t.expires_at - nowSecs()) < 300
-  const canComplete  = isSeller && (statusLower === 'open' || statusLower === 'paid')
-  const canCancel    = statusLower === 'open' || statusLower === 'paid'
+
+  const disputedOpen = statusLower === 'disputed' && !t.dispute_resolved
+  const canComplete  = isSeller && (statusLower === 'open' || statusLower === 'paid' || disputedOpen)
+  const canCancel    = statusLower === 'open' || statusLower === 'paid' || disputedOpen
 
   const actionButtons = [
     `<button class="btn-sm btn-open-chat" data-id="${t.id}">Open Chat</button>`,
@@ -554,8 +557,3 @@ function uniqSorted(values) {
 function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
-
-// ── Chat panel ────────────────────────────────────────────────────────────────
-
-
-

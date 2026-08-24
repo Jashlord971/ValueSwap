@@ -1,9 +1,9 @@
-// trade-detail-page.js — dedicated trade detail and chat page
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods } from '../api.js'
-import { showAlert, showConfirm, showFeedbackModal } from '../modal.js'
+import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods, resolveDispute } from '../api.js'
+import { showAlert, showConfirm, showFeedbackModal, showDisputeModal } from '../modal.js'
 import { initChat } from '../chat.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
 import { getPresenceBadgeState } from '../presence.js'
@@ -24,7 +24,6 @@ const COIN_TO_GECKO = {
   ETH: 'ethereum',
   USDT: 'tether',
   USDC: 'usd-coin',
-  TRX: 'tron',
 }
 
 async function getUsdPrices() {
@@ -40,7 +39,7 @@ async function getUsdPrices() {
       usdPrices = await res.json()
       return usdPrices
     } catch {
-      // try next candidate
+
     }
   }
 
@@ -147,18 +146,13 @@ document.addEventListener('trade-updated', async (e) => {
 
   currentTrade = { ...currentTrade, ...trade }
   await displayTrade()
-
-  const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
-  const partnerUsername = isCreator
-    ? (currentTrade.offer_owner_username || null)
-    : (currentTrade.creator_username || null)
-  syncTradeChatState(partnerUsername)
+  syncTradeChatState(partnerUsernameForChat(currentTrade))
 })
 
 async function loadTrade() {
   const params = new URLSearchParams(window.location.search)
   const tradeId = params.get('id')
-  
+
   if (!tradeId) {
     document.getElementById('trade-detail-page').classList.remove('hidden')
     document.getElementById('trade-card-container').innerHTML = '<p class="error">No trade ID provided.</p>'
@@ -167,7 +161,7 @@ async function loadTrade() {
 
   try {
     currentTrade = await getTrade(tradeId)
-    
+
     if (!currentTrade) {
       document.getElementById('trade-detail-page').classList.remove('hidden')
       document.getElementById('trade-card-container').innerHTML = '<p class="error">Trade not found.</p>'
@@ -177,13 +171,7 @@ async function loadTrade() {
     await displayTrade()
     document.getElementById('trade-detail-page').classList.remove('hidden')
 
-    // Initialize chat with partner username
-    const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
-    const partnerUsername = isCreator
-      ? (currentTrade.offer_owner_username || null)
-      : (currentTrade.creator_username || null)
-    
-    syncTradeChatState(partnerUsername)
+    syncTradeChatState(partnerUsernameForChat(currentTrade))
   } catch (e) {
     document.getElementById('trade-detail-page').classList.remove('hidden')
     document.getElementById('trade-card-container').innerHTML = `<p class="error">Failed to load trade: ${e.message}</p>`
@@ -193,6 +181,13 @@ async function loadTrade() {
 async function displayTrade() {
   const t = currentTrade
   const isCreator = currentUser && t.creator_uid === currentUser.uid
+  const isOfferOwner = currentUser && t.offer_owner_uid === currentUser.uid
+  if (!isCreator && !isOfferOwner) {
+
+    await displayModeratorTrade(t)
+    return
+  }
+
   const partnerUid  = isCreator ? t.offer_owner_uid : t.creator_uid
   const partnerName = isCreator ? (t.offer_owner_username || null) : (t.creator_username || null)
   const partnerAvatarNumber = isCreator ? t.offer_owner_avatar_number : t.creator_avatar_number
@@ -212,10 +207,6 @@ async function displayTrade() {
     : 'USD equiv unavailable'
   const cardName   = await resolvePaymentMethodName(t.card)
 
-  // offer_type is the offer owner's stated intent ("I want to Buy/Sell crypto").
-  // Backend role mapping:
-  // - offer_type="buy": offer_owner is buyer (wants crypto), trade creator (taker) is seller
-  // - offer_type="sell": offer_owner is seller (holds crypto), trade creator (taker) is buyer
   const offerType = String(t.offer_type || '').toLowerCase()
   const isBuying = (isCreator && offerType === 'sell') || (!isCreator && offerType === 'buy')
 
@@ -313,6 +304,149 @@ async function displayTrade() {
   renderTradeActions(t, isBuying)
 }
 
+async function displayModeratorTrade(t) {
+  const offerOwnerName = t.offer_owner_username || (t.offer_owner_uid ? `${t.offer_owner_uid.slice(0, 8)}…` : '—')
+  const takerName = t.creator_username || (t.creator_uid ? `${t.creator_uid.slice(0, 8)}…` : '—')
+  const offerOwnerAvatar = avatarPathFromNumber(t.offer_owner_avatar_number)
+  const takerAvatar = avatarPathFromNumber(t.creator_avatar_number)
+
+  const currency = t.currency || ''
+  const coin = t.coin || ''
+  const cardName = await resolvePaymentMethodName(t.card)
+  const fiatAmt = t.fiat_amount != null ? `${currency} ${Number(t.fiat_amount).toFixed(2)}` : '—'
+  const cryptoAmt = t.crypto_amount != null ? `${Number(t.crypto_amount).toFixed(6)} ${coin}` : '—'
+  const raisedAt = t.dispute_raised_at ? new Date(Number(t.dispute_raised_at) * 1000).toLocaleString() : '—'
+  const raisedByOfferOwner = !!t.dispute_raised_by_uid && t.dispute_raised_by_uid === t.offer_owner_uid
+  const raisedByLabel = t.dispute_raised_by_uid ? (raisedByOfferOwner ? offerOwnerName : takerName) : '—'
+
+  document.getElementById('chat-partner-label').textContent = 'Dispute Chat'
+
+  const card = `
+    <div style="display: flex; flex-direction: column; gap: 1.1rem;">
+      <p class="muted" style="margin:0;padding:0.6rem 0.85rem;background:var(--bg);border-radius:8px;border:1px solid var(--border);">You're viewing this trade as a moderator.</p>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          <img src="${escHtml(offerOwnerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;" />
+          <div>
+            <span style="color:var(--muted);font-size:0.78rem;display:block;">Offer Owner</span>
+            <strong>${escHtml(offerOwnerName)}</strong>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          <img src="${escHtml(takerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;" />
+          <div>
+            <span style="color:var(--muted);font-size:0.78rem;display:block;">Taker</span>
+            <strong>${escHtml(takerName)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+          <span style="color: var(--muted); font-size: 0.82rem; font-weight: 500;">Fiat</span>
+          <span style="font-weight: 700; font-size: 1.05rem;">${fiatAmt}</span>
+          <span style="color: var(--muted); font-size: 0.8rem;">via ${escHtml(cardName)}</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+          <span style="color: var(--muted); font-size: 0.82rem; font-weight: 500;">Crypto (escrowed)</span>
+          <span style="font-weight: 700; font-size: 1.05rem;">${cryptoAmt}</span>
+        </div>
+      </div>
+
+      <div style="padding:0.85rem 0.95rem;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,0.03);font-size:0.88rem;">
+        <div style="display:flex;flex-direction:column;gap:0.35rem;">
+          <div style="display:flex;justify-content:space-between;gap:0.75rem;">
+            <span style="color: var(--muted);">Raised by</span>
+            <strong>${escHtml(raisedByLabel)}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;gap:0.75rem;">
+            <span style="color: var(--muted);">Raised at</span>
+            <strong>${escHtml(raisedAt)}</strong>
+          </div>
+          ${t.dispute_reason_category ? `
+          <div style="display:flex;justify-content:space-between;gap:0.75rem;">
+            <span style="color: var(--muted);">Reason</span>
+            <strong>${escHtml(t.dispute_reason_category)}</strong>
+          </div>` : ''}
+        </div>
+        ${t.dispute_reason_text ? `
+        <div style="margin-top:0.6rem;">
+          <span style="color: var(--muted); display:block; margin-bottom:0.25rem;">Evidence</span>
+          <p style="margin:0;white-space:pre-wrap;line-height:1.45;">${escHtml(t.dispute_reason_text)}</p>
+        </div>` : ''}
+      </div>
+    </div>
+  `
+
+  const statusLabel = t.dispute_resolved ? 'Disputed — Resolved' : 'Disputed — Live'
+  const statusCard = `
+    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span style="color: var(--muted); font-size: 0.8rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;">Status</span>
+        <span style="background: rgba(239,68,68,0.15); color: var(--danger); font-weight: 700; padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.875rem;">${escHtml(statusLabel)}</span>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span style="color: var(--muted); font-size: 0.8rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;">Opened</span>
+        <span style="color: var(--text); font-size: 0.85rem;">${new Date(t.created_at * 1000).toLocaleString()}</span>
+      </div>
+      ${t.dispute_resolved ? `
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span style="color: var(--muted); font-size: 0.8rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;">Awarded To</span>
+        <span style="color: var(--text); font-size: 0.85rem;">${escHtml(t.dispute_winner_uid === t.offer_owner_uid ? offerOwnerName : takerName)}</span>
+      </div>` : ''}
+    </div>
+  `
+
+  document.getElementById('trade-card-container').innerHTML = card
+  document.getElementById('trade-status-container').innerHTML = statusCard
+  document.getElementById('trade-feedback-container').innerHTML = `
+    <h3 style="margin:0 0 0.35rem;font-size:1rem;">Trade Feedback</h3>
+    <p class="muted" style="margin:0;">Not shown in the moderator view.</p>
+  `
+  document.getElementById('trade-terms-text').textContent = t.terms || 'No terms specified.'
+  clearStatusCountdownTimer()
+  renderModeratorActions(t, offerOwnerName, takerName)
+}
+
+function renderModeratorActions(t, offerOwnerName, takerName) {
+  const container = document.getElementById('trade-actions-container')
+  const card = document.getElementById('trade-actions-card')
+  if (!container) return
+
+  if (t.dispute_resolved) {
+    if (card) card.classList.add('hidden')
+    container.innerHTML = ''
+    return
+  }
+
+  if (card) card.classList.remove('hidden')
+  container.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:0.6rem;">
+      <p class="muted" style="margin:0;">Award the escrowed crypto to whichever party the evidence supports. This releases funds immediately.</p>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;">
+        <button class="btn btn-success" data-award="${escHtml(t.offer_owner_uid)}" data-award-name="${escHtml(offerOwnerName)}">Award to ${escHtml(offerOwnerName)}</button>
+        <button class="btn btn-success" data-award="${escHtml(t.creator_uid)}" data-award-name="${escHtml(takerName)}">Award to ${escHtml(takerName)}</button>
+      </div>
+    </div>
+  `
+
+  container.querySelectorAll('button[data-award]').forEach((btn) => {
+    btn.addEventListener('click', () => handleAwardDispute(btn.dataset.award, btn.dataset.awardName, t.id))
+  })
+}
+
+async function handleAwardDispute(winnerUid, winnerName, tradeId) {
+  const ok = await showConfirm(`Award this trade's escrow to ${winnerName}? This releases the funds immediately and cannot be undone.`)
+  if (!ok) return
+  try {
+    currentTrade = await resolveDispute(tradeId, winnerUid)
+    await displayTrade()
+  } catch (e) {
+    await showAlert(`Resolve failed: ${e.message}`)
+  }
+}
+
 function renderFeedbackSidebarCard(trade) {
   const container = document.getElementById('trade-feedback-container')
   if (!container) return
@@ -320,7 +454,11 @@ function renderFeedbackSidebarCard(trade) {
   const feedback = Array.isArray(trade.feedback) ? trade.feedback : []
   const myFeedback = feedback.find((entry) => entry.from_uid === currentUser.uid)
   const receivedFeedback = feedback.find((entry) => entry.to_uid === currentUser.uid && entry.from_uid !== currentUser.uid)
-  const isCompleted = String(trade.status || '').toLowerCase() === 'completed'
+  const status = String(trade.status || '').toLowerCase()
+  const isCompleted = status === 'completed'
+
+  const isDisputeWinner = status === 'disputed' && !!trade.dispute_resolved && trade.dispute_winner_uid === currentUser.uid
+  const canLeaveFeedback = isCompleted || isDisputeWinner
 
   const receivedMarkup = receivedFeedback
     ? `
@@ -331,8 +469,14 @@ function renderFeedbackSidebarCard(trade) {
       </div>`
     : '<p class="muted" style="margin-top:0.55rem;">No feedback has been left for you yet.</p>'
 
-  let actionMarkup = '<button class="btn" style="margin-top:0.7rem;" disabled>Feedback opens after completion</button>'
-  if (isCompleted) {
+  let placeholderText = 'Feedback opens after completion'
+  if (status === 'disputed') {
+    placeholderText = trade.dispute_resolved
+      ? 'Only the dispute winner can leave feedback'
+      : 'Feedback opens once the dispute is resolved'
+  }
+  let actionMarkup = `<button class="btn" style="margin-top:0.7rem;" disabled>${escHtml(placeholderText)}</button>`
+  if (canLeaveFeedback) {
     actionMarkup = myFeedback
       ? `
         <div style="margin-top:0.65rem;">
@@ -360,12 +504,7 @@ function renderFeedbackSidebarCard(trade) {
         btn.disabled = true
         currentTrade = await leaveTradeFeedback(trade.id, result.positive, result.comment)
         await displayTrade()
-
-        const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
-        const partnerUsername = isCreator
-          ? (currentTrade.offer_owner_username || null)
-          : (currentTrade.creator_username || null)
-        syncTradeChatState(partnerUsername)
+        syncTradeChatState(partnerUsernameForChat(currentTrade))
       } catch (e) {
         await showAlert(`Feedback failed: ${e.message}`)
         btn.disabled = false
@@ -387,12 +526,7 @@ function renderFeedbackSidebarCard(trade) {
         editBtn.disabled = true
         currentTrade = await editTradeFeedback(trade.id, result.positive, result.comment)
         await displayTrade()
-
-        const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
-        const partnerUsername = isCreator
-          ? (currentTrade.offer_owner_username || null)
-          : (currentTrade.creator_username || null)
-        syncTradeChatState(partnerUsername)
+        syncTradeChatState(partnerUsernameForChat(currentTrade))
       } catch (e) {
         await showAlert(`Feedback update failed: ${e.message}`)
         editBtn.disabled = false
@@ -411,6 +545,13 @@ function bindTradeFeesToggle() {
   }
 }
 
+function partnerUsernameForChat(trade) {
+  if (!currentUser) return null
+  if (trade.creator_uid === currentUser.uid) return trade.offer_owner_username || null
+  if (trade.offer_owner_uid === currentUser.uid) return trade.creator_username || null
+  return null
+}
+
 function syncTradeChatState(partnerUsername) {
   document.dispatchEvent(new CustomEvent('open-chat', {
     detail: {
@@ -427,8 +568,10 @@ function syncTradeChatState(partnerUsername) {
     if (!container) return
 
     const status = String(t.status || '').toLowerCase()
-    const terminal = ['completed', 'cancelled', 'expired']
-    if (terminal.includes(status)) {
+
+    const isTerminal = ['completed', 'cancelled', 'expired'].includes(status)
+      || (status === 'disputed' && !!t.dispute_resolved)
+    if (isTerminal) {
       if (card) card.classList.add('hidden')
       container.innerHTML = ''
       return
@@ -437,14 +580,15 @@ function syncTradeChatState(partnerUsername) {
     if (card) card.classList.remove('hidden')
 
     const buttons = []
+    const disputedOpen = status === 'disputed' && !t.dispute_resolved
 
     if (isBuying && t.status === 'open') {
       buttons.push({ label: 'Mark as Paid', action: 'paid', cls: 'btn' })
     }
-    if (isBuying && (t.status === 'open' || t.status === 'paid')) {
+    if (isBuying && (t.status === 'open' || t.status === 'paid' || disputedOpen)) {
       buttons.push({ label: 'Cancel Trade', action: 'cancel', cls: 'btn-danger' })
     }
-    if (!isBuying && (t.status === 'open' || t.status === 'paid')) {
+    if (!isBuying && (t.status === 'open' || t.status === 'paid' || disputedOpen)) {
       buttons.push({ label: 'Complete Trade', action: 'complete', cls: 'btn-success' })
     }
     if (t.status === 'paid') {
@@ -484,16 +628,12 @@ function syncTradeChatState(partnerUsername) {
         const reason = await promptReason('Reason for cancellation (optional):')
         currentTrade = await cancelTrade(tradeId, reason || undefined)
       } else if (action === 'dispute') {
-        const ok = await showConfirm('Open a dispute for this trade? An admin will review the case.')
-        if (!ok) return
-        currentTrade = await disputeTrade(tradeId)
+        const result = await showDisputeModal()
+        if (!result) return
+        currentTrade = await disputeTrade(tradeId, result.reasonCategory, result.reasonText)
       }
       await displayTrade()
-      const isCreator = currentUser && currentTrade.creator_uid === currentUser.uid
-      const partnerUsername = isCreator
-        ? (currentTrade.offer_owner_username || null)
-        : (currentTrade.creator_username || null)
-      syncTradeChatState(partnerUsername)
+      syncTradeChatState(partnerUsernameForChat(currentTrade))
     } catch (e) {
       await showAlert(`Action failed: ${e.message}`)
     }

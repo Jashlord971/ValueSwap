@@ -1,9 +1,3 @@
-/**
- * shared.js — bootstraps Firebase, handles auth state, renders the navbar.
- * Import and call `initShared(onUser)` from every page.
- * onUser(user, profile) is called when a signed-in user is ready.
- * If the user is not signed in they are redirected to /.
- */
 
 import { initializeApp }         from 'firebase/app'
 import { firebaseConfig }        from './firebase-config.js'
@@ -23,10 +17,6 @@ export function getFirebaseApp() {
 let _currentProfile = null
 export function getCurrentProfile() { return _currentProfile }
 
-/**
- * @param {(user: import('firebase/auth').User, profile: object) => void} onUser
- * @param {{ requireAuth?: boolean }} [opts]
- */
 export function initShared(onUser, { requireAuth = true } = {}) {
   const app = getFirebaseApp()
   initAuth(app)
@@ -51,8 +41,6 @@ export function initShared(onUser, { requireAuth = true } = {}) {
   })
 }
 
-// ── Navbar auth area ──────────────────────────────────────────────────────────
-
 function renderNavAuth(user, profile) {
   const el = document.getElementById('nav-auth')
   if (!el) return
@@ -75,8 +63,6 @@ function renderNavAuth(user, profile) {
   ensureDevBalanceTools()
   void refreshNavCombinedBalance()
 }
-
-// ── Profile modal ─────────────────────────────────────────────────────────────
 
 function showProfileModal(profile) {
   document.getElementById('profile-modal-overlay')?.remove()

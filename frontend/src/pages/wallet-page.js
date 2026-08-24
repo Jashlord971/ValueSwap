@@ -1,4 +1,4 @@
-// wallet-page.js — entry point for wallet.html
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
@@ -36,6 +36,5 @@ onAuthChange(async (user) => {
   ensureDevBalanceTools()
   void refreshNavCombinedBalance()
 
-  initWallet()
+  initWallet(user.uid)
 })
-
