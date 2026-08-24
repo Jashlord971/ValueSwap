@@ -19,6 +19,7 @@ const KIND_META = {
   deposit:            { label: 'Deposit',           icon: '⬇️' },
   withdrawal:         { label: 'Withdrawal',        icon: '⬆️' },
   trade:              { label: 'Trade payout',      icon: '🔄' },
+  swap:               { label: 'Swap',              icon: '🔀' },
 }
 
 function escHtml(str) {
@@ -84,6 +85,10 @@ function describeTransaction(tx, counterpartyName) {
       return isOut
         ? `Trade payout to ${counterpartyName || 'trade counterparty'}${tx.counterparty_label ? ` — ${escHtml(tx.counterparty_label)}` : ''}`
         : `Trade payout from ${counterpartyName || 'trade counterparty'}${tx.counterparty_label ? ` — ${escHtml(tx.counterparty_label)}` : ''}`
+    case 'swap':
+      return isOut
+        ? `Swapped to ${counterpartyName || 'another platform user'}`
+        : `Swapped from ${counterpartyName || 'another platform user'}`
     default:
       return isOut ? 'Sent' : 'Received'
   }

@@ -138,8 +138,11 @@ export const editTradeFeedback  = (id, positive, comment) => request('POST', `/t
 export const listSwapOffers   = ()      => request('GET', '/swaps')
 export const listMySwapOffers = ()      => request('GET', '/swaps?mine=true')
 export const createSwapOffer  = (data)  => request('POST', '/swaps', data)
-export const acceptSwapOffer  = (id)    => request('POST', `/swaps/${id}/accept`)
+export const acceptSwapOffer  = (id, amount) => request('POST', `/swaps/${id}/accept`, { amount })
 export const cancelSwapOffer  = (id)    => request('POST', `/swaps/${id}/cancel`)
+export const updateSwapOffer  = (id, data) => request('PATCH', `/swaps/${id}`, data)
+export const toggleSwapOffer  = (id, active) => request('PATCH', `/swaps/${id}/status`, { active })
+export const deleteSwapOffer  = (id)    => request('DELETE', `/swaps/${id}`)
 
 export const listDisputes  = ()                  => request('GET', '/trades/disputes')
 export const resolveDispute = (id, winnerUid)    => request('POST', `/trades/${id}/resolve-dispute`, { winner_uid: winnerUid }).then(r => { cacheInvalidate('trades'); return r })

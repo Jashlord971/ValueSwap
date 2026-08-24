@@ -162,6 +162,10 @@ function showSendModal(coin) {
   const addrHint = coin.id === 'btc' ? 'bc1q…' : '0x…'
   const coinPriceUsd = Number(prices[coin.geckoId]?.usd) || null
   const maxBalUsd = coinPriceUsd ? maxBal * coinPriceUsd : null
+  // Default to entering the amount in fiat when we have a price to convert
+  // with — most people think in dollars first — falling back to the coin
+  // unit when there's no price feed to switch with anyway.
+  const defaultUnit = coinPriceUsd ? 'usd' : 'coin'
 
   overlay.querySelector('.modal').innerHTML = `
     <div class="modal-header">
@@ -176,11 +180,11 @@ function showSendModal(coin) {
       placeholder="@username or ${addrHint}" autocomplete="off" />
     <div id="send-recipient-preview" class="recipient-preview" style="display:none"></div>
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:0.75rem;">
-      <label class="form-label" id="send-amount-label" style="margin:0;">Amount (${coin.symbol})</label>
-      ${coinPriceUsd ? '<button id="btn-send-unit-toggle" type="button" class="btn-sm btn-secondary" style="font-size:0.75rem;padding:0.2rem 0.55rem;">Switch to USD</button>' : ''}
+      <label class="form-label" id="send-amount-label" style="margin:0;">Amount (${defaultUnit === 'usd' ? 'USD' : coin.symbol})</label>
+      ${coinPriceUsd ? `<button id="btn-send-unit-toggle" type="button" class="btn-sm btn-secondary" style="font-size:0.75rem;padding:0.2rem 0.55rem;">Switch to ${defaultUnit === 'usd' ? coin.symbol : 'USD'}</button>` : ''}
     </div>
     <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.35rem;">
-      <input id="send-amount" class="form-input" type="number" min="0" max="${maxBal}" step="any" placeholder="0.00" style="flex:1;" />
+      <input id="send-amount" class="form-input" type="number" min="0" max="${defaultUnit === 'usd' ? maxBalUsd : maxBal}" step="any" placeholder="0.00" style="flex:1;" />
       <button id="btn-send-max" type="button" class="btn-sm btn-secondary">Max</button>
     </div>
     <p id="send-amount-equiv" class="muted" style="font-size:0.78rem;margin-top:0.3rem;"></p>
@@ -196,7 +200,7 @@ function showSendModal(coin) {
   const amountLabel = overlay.querySelector('#send-amount-label')
   const equivEl      = overlay.querySelector('#send-amount-equiv')
   const unitToggleBtn = overlay.querySelector('#btn-send-unit-toggle')
-  let amountUnit = 'coin'
+  let amountUnit = defaultUnit
 
   function amountInCoin() {
     const raw = parseFloat(amountInput.value)

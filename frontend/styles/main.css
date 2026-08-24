@@ -2023,6 +2023,52 @@ button:disabled, .btn:disabled, .btn-sm:disabled { opacity: 0.45; cursor: not-al
   color: #fff;
 }
 
+/* Swap offer cards have more going on (a range, a rate, a live take-amount
+   input + preview + button) than the 3-column P2P grid was built for, so they
+   get their own stacked layout instead of squeezing into .p2p-offer-body. */
+.swap-offer-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 0.9rem 0;
+}
+
+.swap-offer-rate {
+  margin-bottom: 0.85rem;
+}
+
+.swap-offer-take {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.swap-take-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.swap-take-row .form-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.swap-take-row .p2p-card-action {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .swap-offer-stats {
+    grid-template-columns: 1fr;
+  }
+  .swap-take-row {
+    flex-direction: column;
+  }
+}
+
 .p2p-offer-terms {
   margin-top: 1rem;
   padding-top: 1rem;
@@ -2163,6 +2209,7 @@ button:disabled, .btn:disabled, .btn-sm:disabled { opacity: 0.45; cursor: not-al
 .status-expired   { background: rgba(168, 85, 247, 0.15); color: #a855f7; font-weight: 600; }
 .status-open      { background: rgba(59, 130, 246, 0.15); color: #3b82f6; font-weight: 600; }
 .status-filled    { background: rgba(34, 197, 94, 0.15); color: var(--success); font-weight: 600; }
+.status-paused    { background: rgba(148, 163, 184, 0.2); color: var(--muted); font-weight: 600; }
 
 .trade-card-header {
   display: flex;

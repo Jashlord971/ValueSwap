@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig } from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, listSwapOffers, createSwapOffer, acceptSwapOffer, getUserProfile } from '../api.js'
+import { upsertUser, listSwapOffers, acceptSwapOffer, getUserProfile, getUsdPrices } from '../api.js'
 import { showAlert, showConfirm } from '../modal.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
 import { COIN_LOGOS } from '../coin-logos.js'
@@ -13,11 +13,23 @@ const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
 
 const COINS = ['BTC', 'ETH', 'USDT', 'USDC']
-const SWAP_FEE_PCT = 1
+const COIN_TO_GECKO = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  USDT: 'tether',
+  USDC: 'usd-coin',
+}
 
 let currentUser = null
 let profileCache = new Map()
 let pollTimer = null
+let priceCache = null
+let allOffers = []
+const filters = { getCoin: '', giveCoin: '', minUsd: '', maxUsd: '' }
+// Per-card unit for the "amount to take" input, keyed by offer id — defaults
+// to USD (set the first time a card is built) so raw BTC/ETH amounts aren't
+// the only way to size a fill; a taker can switch a given card back to coin units.
+const takeUnitByOfferId = new Map()
 
 onAuthChange(async (user) => {
   if (!user) { window.location.href = '/'; return }
@@ -43,19 +55,52 @@ onAuthChange(async (user) => {
   ensureDevBalanceTools()
   void refreshNavCombinedBalance()
 
-  document.getElementById('btn-new-swap').addEventListener('click', openCreateSwapModal)
-
+  bindFilters()
+  await loadPrices()
   await loadSwaps()
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(loadSwaps, 20000)
 })
 
+function bindFilters() {
+  const getSelect = document.getElementById('filter-get-coin')
+  const giveSelect = document.getElementById('filter-give-coin')
+  const minInput = document.getElementById('filter-min-usd')
+  const maxInput = document.getElementById('filter-max-usd')
+  const clearBtn = document.getElementById('btn-clear-swap-filters')
+  if (!getSelect || !giveSelect || !minInput || !maxInput) return
+
+  const optionsHtml = '<option value="">Any</option>' + COINS.map((c) => `<option value="${c}">${c}</option>`).join('')
+  getSelect.innerHTML = optionsHtml
+  giveSelect.innerHTML = optionsHtml
+
+  getSelect.addEventListener('change', () => { filters.getCoin = getSelect.value; renderSwaps(document.getElementById('swaps-list'), allOffers) })
+  giveSelect.addEventListener('change', () => { filters.giveCoin = giveSelect.value; renderSwaps(document.getElementById('swaps-list'), allOffers) })
+  minInput.addEventListener('input', () => { filters.minUsd = minInput.value; renderSwaps(document.getElementById('swaps-list'), allOffers) })
+  maxInput.addEventListener('input', () => { filters.maxUsd = maxInput.value; renderSwaps(document.getElementById('swaps-list'), allOffers) })
+  clearBtn?.addEventListener('click', () => {
+    filters.getCoin = ''; filters.giveCoin = ''; filters.minUsd = ''; filters.maxUsd = ''
+    getSelect.value = ''; giveSelect.value = ''; minInput.value = ''; maxInput.value = ''
+    renderSwaps(document.getElementById('swaps-list'), allOffers)
+  })
+}
+
+async function loadPrices() {
+  if (priceCache) return priceCache
+  try {
+    priceCache = await getUsdPrices(Object.values(COIN_TO_GECKO))
+  } catch {
+    priceCache = null
+  }
+  return priceCache
+}
+
 async function loadSwaps() {
   const list = document.getElementById('swaps-list')
   try {
-    const offers = await listSwapOffers()
-    await hydrateProfiles(offers)
-    renderSwaps(list, offers)
+    allOffers = await listSwapOffers()
+    await hydrateProfiles(allOffers)
+    renderSwaps(list, allOffers)
   } catch (e) {
     list.innerHTML = `<p class="error">Failed to load swap offers: ${escHtml(e.message)}</p>`
   }
@@ -69,13 +114,59 @@ async function hydrateProfiles(offers) {
   }))
 }
 
-function renderSwaps(list, offers) {
+/** USD value of what's actually still fillable, using from_coin's price. */
+function usdRangeFor(offer) {
+  const price = priceCache?.[COIN_TO_GECKO[String(offer.from_coin || '').toUpperCase()]]?.usd
+  if (!price) return null
+  return { min: Number(offer.min_amount) * price, max: Number(offer.remaining_amount) * price }
+}
+
+function fromPriceFor(offer) {
+  return priceCache?.[COIN_TO_GECKO[String(offer.from_coin || '').toUpperCase()]]?.usd || null
+}
+
+function formatUsd(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '$0.00'
+  return `$${numeric.toFixed(2)}`
+}
+
+function applyFilters(offers) {
+  return offers.filter((o) => {
+    if (filters.getCoin && String(o.from_coin || '').toUpperCase() !== filters.getCoin) return false
+    if (filters.giveCoin && String(o.to_coin || '').toUpperCase() !== filters.giveCoin) return false
+
+    const minUsd = Number.parseFloat(filters.minUsd)
+    const maxUsd = Number.parseFloat(filters.maxUsd)
+    if (Number.isFinite(minUsd) || Number.isFinite(maxUsd)) {
+      const range = usdRangeFor(o)
+      if (!range) return true // no price to evaluate against — don't hide it over a filter we can't apply
+      if (Number.isFinite(minUsd) && range.max < minUsd) return false
+      if (Number.isFinite(maxUsd) && range.min > maxUsd) return false
+    }
+    return true
+  })
+}
+
+function renderSwaps(list, allOffersIn) {
+  // Defensive: an offer with nothing meaningful left shouldn't render — the
+  // backend already excludes non-Open offers, but this also covers any
+  // leftover dust-remainder rows from before the Filled-threshold was fixed.
+  const live = allOffersIn.filter((o) => Number(o.remaining_amount) > 1e-8 && Number(o.max_amount) > 0)
+  const offers = applyFilters(live)
   if (!offers.length) {
-    list.innerHTML = '<div class="card"><p class="muted">No open swap offers right now. Be the first to post one.</p></div>'
+    list.innerHTML = `<div class="card"><p class="muted">${live.length ? 'No swap offers match your filters.' : 'No open swap offers right now. Be the first to post one.'}</p></div>`
     return
   }
 
   list.innerHTML = offers.map(buildSwapCard).join('')
+  list.querySelectorAll('.swap-take-amount').forEach((input) => {
+    input.addEventListener('input', () => updateTakePreview(input.dataset.id, offers))
+    updateTakePreview(input.dataset.id, offers)
+  })
+  list.querySelectorAll('.swap-take-unit-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => handleToggleTakeUnit(btn.dataset.id, offers))
+  })
   list.querySelectorAll('.btn-accept-swap').forEach((btn) => {
     btn.addEventListener('click', () => handleAccept(btn.dataset.id))
   })
@@ -89,11 +180,31 @@ function buildSwapCard(offer) {
   const toCoin = String(offer.to_coin || '').toUpperCase()
   const fromLogo = COIN_LOGOS[fromCoin]
   const toLogo = COIN_LOGOS[toCoin]
-  const rate = Number(offer.to_amount) / Number(offer.from_amount)
-  const youReceive = Number(offer.from_amount) * (1 - Number(offer.fee_pct || 0) / 100)
+  const maxAmount = Number(offer.max_amount)
+  const rawRate = Number(offer.to_amount) / maxAmount
+  const rate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : null
+  const minAmount = Number(offer.min_amount)
+  const remaining = Number(offer.remaining_amount)
+  const rangeLabel = minAmount >= remaining - 1e-9
+    ? formatCoinAmount(remaining)
+    : `${formatCoinAmount(minAmount)}–${formatCoinAmount(remaining)}`
+  const usdRange = usdRangeFor(offer)
+  const usdRangeLabel = usdRange
+    ? (usdRange.min >= usdRange.max - 0.005 ? formatUsd(usdRange.max) : `${formatUsd(usdRange.min)}–${formatUsd(usdRange.max)}`)
+    : null
+  const id = escHtml(offer.id)
+
+  // Default a new card to USD (helps most for BTC/ETH's awkward small
+  // decimals); leaves an already-toggled card as the taker left it on refresh.
+  if (!takeUnitByOfferId.has(offer.id)) {
+    takeUnitByOfferId.set(offer.id, fromPriceFor(offer) ? 'usd' : 'coin')
+  }
+  const unit = takeUnitByOfferId.get(offer.id)
+  const price = fromPriceFor(offer)
+  const toDisplay = (coinAmount) => (unit === 'usd' && price ? (coinAmount * price).toFixed(2) : formatCoinAmount(coinAmount))
 
   return `
-    <article class="p2p-offer-card">
+    <article class="p2p-offer-card" data-offer-id="${id}">
       <div class="p2p-offer-trader">
         <img class="p2p-offer-avatar" src="${escHtml(avatarPath)}" alt="" />
         <div class="p2p-offer-trader-copy">
@@ -102,30 +213,108 @@ function buildSwapCard(offer) {
         </div>
       </div>
 
-      <div class="p2p-offer-body">
+      <div class="swap-offer-stats">
         <div class="p2p-offer-stat">
-          <span class="p2p-offer-label">Gives</span>
-          <strong class="p2p-offer-value">${fromLogo ? `<img src="${escHtml(fromLogo)}" alt="" style="width:18px;height:18px;vertical-align:middle;margin-right:0.3rem;" />` : ''}${formatCoinAmount(offer.from_amount)} ${escHtml(fromCoin)}</strong>
+          <span class="p2p-offer-label">Gives (range)</span>
+          <strong class="p2p-offer-value">${fromLogo ? `<img src="${escHtml(fromLogo)}" alt="" style="width:18px;height:18px;vertical-align:middle;margin-right:0.3rem;" />` : ''}${rangeLabel} ${escHtml(fromCoin)}</strong>
+          ${usdRangeLabel ? `<span class="p2p-offer-subtle">≈${escHtml(usdRangeLabel)}</span>` : ''}
         </div>
         <div class="p2p-offer-stat">
-          <span class="p2p-offer-label">Wants</span>
+          <span class="p2p-offer-label">Full-fill price</span>
           <strong class="p2p-offer-value">${toLogo ? `<img src="${escHtml(toLogo)}" alt="" style="width:18px;height:18px;vertical-align:middle;margin-right:0.3rem;" />` : ''}${formatCoinAmount(offer.to_amount)} ${escHtml(toCoin)}</strong>
         </div>
-        <div class="p2p-offer-stat p2p-offer-action-block">
-          <span class="p2p-offer-subtle">Rate: 1 ${escHtml(fromCoin)} = ${formatCoinAmount(rate)} ${escHtml(toCoin)}</span>
-          <span class="p2p-offer-subtle">You'd pay ${formatCoinAmount(offer.to_amount)} ${escHtml(toCoin)}, receive ${formatCoinAmount(youReceive)} ${escHtml(fromCoin)} after ${Number(offer.fee_pct || 0)}% fee</span>
-          <button class="p2p-card-action btn-accept-swap" data-id="${escHtml(offer.id)}">Accept</button>
+      </div>
+
+      <p class="p2p-offer-subtle swap-offer-rate">${rate !== null ? `Rate: 1 ${escHtml(fromCoin)} = ${formatCoinAmount(rate)} ${escHtml(toCoin)}${formatProfitBadge(offer.profit_pct)}` : 'Rate unavailable'}</p>
+
+      <div class="swap-offer-take">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">
+          <label class="muted" style="font-size:0.78rem;" for="swap-take-${id}">Amount to take${unit === 'usd' ? ' (USD)' : ` (${escHtml(fromCoin)})`}</label>
+          ${price ? `<button type="button" class="btn-sm btn-secondary swap-take-unit-toggle" data-id="${id}" style="font-size:0.72rem;padding:0.18rem 0.5rem;">Switch to ${unit === 'usd' ? escHtml(fromCoin) : 'USD'}</button>` : ''}
         </div>
+        <div class="swap-take-row">
+          <input id="swap-take-${id}" class="form-input swap-take-amount" data-id="${id}"
+            type="number" min="${toDisplay(minAmount)}" max="${toDisplay(remaining)}" step="any" value="${toDisplay(remaining)}" />
+          <button class="p2p-card-action btn-accept-swap" data-id="${id}">Accept</button>
+        </div>
+        <span class="p2p-offer-subtle swap-take-preview" data-preview-id="${id}"></span>
       </div>
     </article>
   `
 }
 
+/** Converts a take-amount input's current display value to from_coin units. */
+function takeAmountAsCoin(offer, input) {
+  const unit = takeUnitByOfferId.get(offer.id) || 'coin'
+  const price = fromPriceFor(offer)
+  const displayValue = Number.parseFloat(input.value)
+  if (!Number.isFinite(displayValue)) return NaN
+  return unit === 'usd' && price ? displayValue / price : displayValue
+}
+
+function updateTakePreview(id, offers) {
+  const offer = offers.find((o) => o.id === id)
+  const input = document.getElementById(`swap-take-${id}`)
+  const preview = document.querySelector(`.swap-take-preview[data-preview-id="${id}"]`)
+  if (!offer || !input || !preview) return
+
+  const fromCoin = String(offer.from_coin || '').toUpperCase()
+  const toCoin = String(offer.to_coin || '').toUpperCase()
+  const takeFromAmount = takeAmountAsCoin(offer, input)
+  if (!Number.isFinite(takeFromAmount) || takeFromAmount <= 0) { preview.textContent = ''; return }
+
+  const rate = Number(offer.to_amount) / Number(offer.max_amount)
+  if (!Number.isFinite(rate) || rate <= 0) { preview.textContent = ''; return }
+  const feeRate = Number(offer.fee_pct || 0) / 100
+  const takeToAmount = takeFromAmount * rate
+  const youReceive = takeFromAmount * (1 - feeRate)
+  preview.textContent = `You'd pay ${formatCoinAmount(takeToAmount)} ${toCoin}, receive ${formatCoinAmount(youReceive)} ${fromCoin} after ${Number(offer.fee_pct || 0)}% fee`
+}
+
+function handleToggleTakeUnit(id, offers) {
+  const offer = offers.find((o) => o.id === id)
+  const input = document.getElementById(`swap-take-${id}`)
+  const toggleBtn = document.querySelector(`.swap-take-unit-toggle[data-id="${id}"]`)
+  const label = document.querySelector(`label[for="swap-take-${id}"]`)
+  if (!offer || !input) return
+  const price = fromPriceFor(offer)
+  if (!price) return
+
+  // Patch the existing card in place (rather than a full renderSwaps rebuild)
+  // so the amount the taker already typed carries over, just re-displayed —
+  // a full rebuild would reset every card back to its default full-amount value.
+  const coinAmount = takeAmountAsCoin(offer, input)
+  const nextUnit = takeUnitByOfferId.get(id) === 'usd' ? 'coin' : 'usd'
+  takeUnitByOfferId.set(id, nextUnit)
+
+  const fromCoin = String(offer.from_coin || '').toUpperCase()
+  const minAmount = Number(offer.min_amount)
+  const remaining = Number(offer.remaining_amount)
+  const toDisplay = (v) => (nextUnit === 'usd' ? (v * price).toFixed(2) : formatCoinAmount(v))
+  input.min = toDisplay(minAmount)
+  input.max = toDisplay(remaining)
+  if (Number.isFinite(coinAmount)) input.value = toDisplay(coinAmount)
+
+  if (label) label.textContent = `Amount to take${nextUnit === 'usd' ? ' (USD)' : ` (${fromCoin})`}`
+  if (toggleBtn) toggleBtn.textContent = `Switch to ${nextUnit === 'usd' ? fromCoin : 'USD'}`
+
+  updateTakePreview(id, offers)
+}
+
 async function handleAccept(id) {
+  const offer = allOffers.find((o) => o.id === id)
+  const input = document.getElementById(`swap-take-${id}`)
+  if (!offer || !input) return
+  const amount = takeAmountAsCoin(offer, input)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await showAlert('Enter a valid amount to take.')
+    return
+  }
+
   const ok = await showConfirm('Accept this swap? Both sides transfer immediately on your internal ledger and cannot be undone.')
   if (!ok) return
   try {
-    await acceptSwapOffer(id)
+    await acceptSwapOffer(id, amount)
     await loadSwaps()
     void refreshNavCombinedBalance()
   } catch (e) {
@@ -133,94 +322,10 @@ async function handleAccept(id) {
   }
 }
 
-function ensureCreateSwapModal() {
-  if (document.getElementById('create-swap-modal')) return
-  const el = document.createElement('div')
-  el.innerHTML = `
-    <div id="create-swap-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
-      <div class="modal" style="max-width:420px">
-        <div class="modal-header">
-          <h3>New Swap Offer</h3>
-          <button id="close-create-swap-modal" class="modal-close" aria-label="Close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <div class="field-row">
-            <label for="swap-from-coin">You give</label>
-            <div style="display:flex;gap:0.5rem;">
-              <input id="swap-from-amount" type="number" min="0" step="any" placeholder="e.g. 99" class="form-input" style="flex:2;" />
-              <select id="swap-from-coin" class="form-input" style="flex:1;">${COINS.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
-            </div>
-          </div>
-          <div class="field-row">
-            <label for="swap-to-coin">You want</label>
-            <div style="display:flex;gap:0.5rem;">
-              <input id="swap-to-amount" type="number" min="0" step="any" placeholder="e.g. 100" class="form-input" style="flex:2;" />
-              <select id="swap-to-coin" class="form-input" style="flex:1;">${COINS.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
-            </div>
-          </div>
-          <p id="swap-preview" class="muted" style="margin-top:0.35rem;"></p>
-          <p id="create-swap-error" class="error"></p>
-          <button id="btn-submit-swap" style="width:100%">Post Swap Offer</button>
-        </div>
-      </div>
-    </div>
-  `
-  document.body.appendChild(el.firstElementChild)
-  document.getElementById('close-create-swap-modal').addEventListener('click', () => {
-    document.getElementById('create-swap-modal').classList.add('hidden')
-  })
-  document.getElementById('swap-to-coin').value = 'USDC'
-
-  const updatePreview = () => {
-    const fromAmount = Number.parseFloat(document.getElementById('swap-from-amount').value)
-    const fromCoin = document.getElementById('swap-from-coin').value
-    const preview = document.getElementById('swap-preview')
-    if (!Number.isFinite(fromAmount) || fromAmount <= 0) { preview.textContent = ''; return }
-    const afterFee = fromAmount * (1 - SWAP_FEE_PCT / 100)
-    preview.textContent = `The taker receives ${formatCoinAmount(afterFee)} ${fromCoin} after the ${SWAP_FEE_PCT}% platform fee. You'll receive your requested amount minus the same fee once someone accepts.`
-  }
-  document.getElementById('swap-from-amount').oninput = updatePreview
-  document.getElementById('swap-from-coin').onchange = updatePreview
-}
-
-function openCreateSwapModal() {
-  ensureCreateSwapModal()
-  const modal = document.getElementById('create-swap-modal')
-  document.getElementById('swap-from-amount').value = ''
-  document.getElementById('swap-to-amount').value = ''
-  document.getElementById('create-swap-error').textContent = ''
-  document.getElementById('swap-preview').textContent = ''
-  modal.classList.remove('hidden')
-
-  const btn = document.getElementById('btn-submit-swap')
-  const handler = async () => {
-    const errEl = document.getElementById('create-swap-error')
-    errEl.textContent = ''
-    const from_coin = document.getElementById('swap-from-coin').value
-    const to_coin = document.getElementById('swap-to-coin').value
-    const from_amount = Number.parseFloat(document.getElementById('swap-from-amount').value)
-    const to_amount = Number.parseFloat(document.getElementById('swap-to-amount').value)
-
-    if (from_coin === to_coin) { errEl.textContent = 'Choose two different coins.'; return }
-    if (!Number.isFinite(from_amount) || from_amount <= 0) { errEl.textContent = 'Enter a valid amount to give.'; return }
-    if (!Number.isFinite(to_amount) || to_amount <= 0) { errEl.textContent = 'Enter a valid amount you want.'; return }
-
-    btn.disabled = true
-    try {
-      await createSwapOffer({ from_coin, to_coin, from_amount, to_amount })
-      modal.classList.add('hidden')
-      await loadSwaps()
-      void refreshNavCombinedBalance()
-    } catch (e) {
-      errEl.textContent = e.message
-    } finally {
-      btn.disabled = false
-    }
-  }
-
-  const fresh = btn.cloneNode(true)
-  btn.replaceWith(fresh)
-  fresh.addEventListener('click', handler)
+function formatProfitBadge(profitPct) {
+  const pct = Number(profitPct || 0)
+  if (Math.abs(pct) < 0.01) return ''
+  return pct > 0 ? ` (+${pct.toFixed(1)}% for the poster)` : ` (${pct.toFixed(1)}% — better than market)`
 }
 
 function formatCoinAmount(value) {

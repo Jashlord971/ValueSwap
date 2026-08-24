@@ -15,12 +15,27 @@
 
   <div id="app">
     <section class="section">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
-        <div>
-          <h2 style="margin:0 0 0.35rem;">Swap Crypto</h2>
-          <p class="muted" style="margin:0;">Trade one coin for another directly on the ledger. A 1% fee applies. <a href="/my-swaps.html">View my swaps →</a></p>
-        </div>
-        <button id="btn-new-swap" class="btn-primary">New Swap Offer</button>
+      <h2 style="margin:0 0 0.35rem;">Swap Crypto</h2>
+      <p class="muted" style="margin:0;">All open swap offers from other users. Trade one coin for another directly on the ledger — a 1% fee applies. Want to post your own? <a href="/my-swaps.html">Go to My Swaps →</a></p>
+
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;margin-top:1rem;">
+        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;color:var(--muted);">
+          You'll receive
+          <select id="filter-get-coin" class="form-input" style="min-width:110px;"></select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;color:var(--muted);">
+          You'll pay with
+          <select id="filter-give-coin" class="form-input" style="min-width:110px;"></select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;color:var(--muted);">
+          Min size ($)
+          <input id="filter-min-usd" type="number" min="0" step="any" placeholder="e.g. 100" class="form-input" style="width:110px;" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;color:var(--muted);">
+          Max size ($)
+          <input id="filter-max-usd" type="number" min="0" step="any" placeholder="e.g. 1000" class="form-input" style="width:110px;" />
+        </label>
+        <button id="btn-clear-swap-filters" type="button" class="btn-sm btn-secondary">Clear Filters</button>
       </div>
 
       <div id="swaps-list" class="trade-cards-grid" style="margin-top:1.1rem;">

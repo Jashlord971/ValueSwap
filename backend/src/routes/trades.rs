@@ -996,7 +996,7 @@ fn required_locked_crypto_for_fiat(fiat_amount: f64, fiat_to_usd: f64, coin_pric
     }
 }
 
-async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppError> {
+pub(crate) async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppError> {
     let coin = coin.trim().to_uppercase();
     if coin == "USDT" || coin == "USDC" {
         return Ok(1.0);

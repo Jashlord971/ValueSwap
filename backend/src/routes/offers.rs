@@ -1056,6 +1056,17 @@ pub async fn rebalance_active_offers_for_user(state: Arc<AppState>, uid: &str) -
     Ok(updated)
 }
 
+const INACTIVITY_DEACTIVATE_SECS: u64 = 3 * 24 * 3600;
+
+async fn user_last_active_at(db: &RtdbClient<'_>, uid: &str) -> u64 {
+    db.get(&format!("users/{}", uid))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.get("last_active_at").and_then(|x| x.as_u64()))
+        .unwrap_or(0)
+}
+
 pub async fn rebalance_all_active_offers(state: Arc<AppState>) {
     let db = RtdbClient::new_admin(&state);
     let docs = match db.get_collection("offers").await {
@@ -1066,18 +1077,34 @@ pub async fn rebalance_all_active_offers(state: Arc<AppState>) {
         }
     };
 
-    let mut uids = std::collections::HashSet::new();
+    let mut offer_ids_by_uid: HashMap<String, Vec<String>> = HashMap::new();
     for val in docs {
         if let Ok(offer) = serde_json::from_value::<Offer>(val) {
             if offer.status == OfferStatus::Active {
-                uids.insert(offer.creator_uid);
+                offer_ids_by_uid.entry(offer.creator_uid).or_default().push(offer.id);
             }
         }
     }
 
+    let now = unix_now();
     let mut touched = 0u64;
-    for uid in uids {
-        match rebalance_active_offers_for_user(state.clone(), &uid).await {
+    let mut deactivated_for_inactivity = 0u64;
+
+    for (uid, offer_ids) in &offer_ids_by_uid {
+        let last_active = user_last_active_at(&db, uid).await;
+        if last_active > 0 && now.saturating_sub(last_active) > INACTIVITY_DEACTIVATE_SECS {
+            let mut updates = serde_json::Map::new();
+            for offer_id in offer_ids {
+                updates.insert(format!("offers/{}/status", offer_id), serde_json::json!("inactive"));
+            }
+            match db.multi_path_update(updates).await {
+                Ok(()) => deactivated_for_inactivity += offer_ids.len() as u64,
+                Err(e) => tracing::warn!("rebalance_all_active_offers: failed to deactivate offers for inactive user {}: {}", uid, e),
+            }
+            continue;
+        }
+
+        match rebalance_active_offers_for_user(state.clone(), uid).await {
             Ok(n) => touched += n,
             Err(e) => tracing::warn!("rebalance_all_active_offers: user {} failed: {}", uid, e),
         }
@@ -1085,6 +1112,9 @@ pub async fn rebalance_all_active_offers(state: Arc<AppState>) {
 
     if touched > 0 {
         tracing::info!("Cron: rebalanced {} offer(s)", touched);
+    }
+    if deactivated_for_inactivity > 0 {
+        tracing::info!("Cron: deactivated {} offer(s) for users inactive 3+ days", deactivated_for_inactivity);
     }
 }
 
