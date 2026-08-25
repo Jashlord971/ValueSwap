@@ -20,6 +20,20 @@
     </div>
 
     <section class="section card">
+      <div class="tab-bar tab-bar-box">
+        <button type="button" id="offers-tab-sell" class="tab-btn tab-btn-box active" data-tab="sell">Sell</button>
+        <button type="button" id="offers-tab-buy" class="tab-btn tab-btn-box" data-tab="buy">Buy</button>
+      </div>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.1rem;">
+        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;color:var(--muted);">
+          Status
+          <select id="offers-filter-status" class="form-input" style="min-width:110px;">
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </label>
+      </div>
       <div id="offers-list"></div>
     </section>
 
@@ -37,12 +51,12 @@
           <label>I want to</label>
           <div class="radio-group">
             <label class="radio-label">
-              <input type="radio" name="offer-type" value="buy" checked />
-              <span>Buy crypto</span>
+              <input type="radio" name="offer-type" value="sell" checked />
+              <span>Sell crypto</span>
             </label>
             <label class="radio-label">
-              <input type="radio" name="offer-type" value="sell" />
-              <span>Sell crypto</span>
+              <input type="radio" name="offer-type" value="buy" />
+              <span>Buy crypto</span>
             </label>
           </div>
         </div>
@@ -112,15 +126,21 @@
             <label for="offer-min-amount">
               Minimum Trade Amount
             </label>
-            <input id="offer-min-amount" type="number" min="0" step="0.01"
-              placeholder="e.g. 50" />
+            <div class="amount-input-suffix">
+              <input id="offer-min-amount" type="number" min="0" step="0.01"
+                placeholder="e.g. 50" />
+              <span id="offer-min-amount-currency" class="amount-input-suffix-badge"></span>
+            </div>
           </div>
           <div class="field-row" style="flex:1">
             <label for="offer-max-amount">
               Maximum Trade Amount
             </label>
-            <input id="offer-max-amount" type="number" min="0" step="0.01"
-              placeholder="e.g. 500" />
+            <div class="amount-input-suffix">
+              <input id="offer-max-amount" type="number" min="0" step="0.01"
+                placeholder="e.g. 500" />
+              <span id="offer-max-amount-currency" class="amount-input-suffix-badge"></span>
+            </div>
           </div>
         </div>
 

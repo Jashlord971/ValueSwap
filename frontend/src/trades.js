@@ -16,14 +16,45 @@ let editingOfferId = null
 let paymentMethods = []
 let allCurrencies  = []
 let allTrades      = []
+let myOffersRaw    = []
+let offersActiveTab    = 'sell'
+let offersFilterStatus = 'all'
 
 export function initTrades(user) {
   currentUser = user
   loadMeta().then(() => {
     bindModal()
+    bindOffersFilters()
     loadMyOffers()
   })
 }
+
+function bindOffersFilters() {
+  const statusSel = document.getElementById('offers-filter-status')
+  statusSel?.addEventListener('change', () => {
+    offersFilterStatus = statusSel.value
+    renderOfferList(document.getElementById('offers-list'), myOffersRaw)
+  })
+
+  document.querySelectorAll('#offers-tab-sell, #offers-tab-buy').forEach(btn => {
+    btn.addEventListener('click', () => {
+      offersActiveTab = btn.dataset.tab
+      document.querySelectorAll('#offers-tab-sell, #offers-tab-buy').forEach(b => {
+        b.classList.toggle('active', b === btn)
+      })
+      renderOfferList(document.getElementById('offers-list'), myOffersRaw)
+    })
+  })
+}
+
+function applyOffersFilter(offers) {
+  return offers.filter(o => {
+    if (o.offer_type !== offersActiveTab) return false
+    if (offersFilterStatus !== 'all' && o.status !== offersFilterStatus) return false
+    return true
+  })
+}
+
 
 async function loadMeta() {
   try {
@@ -158,6 +189,15 @@ function syncCurrencyField(pm = getActivePaymentMethod()) {
   currencySearch.value = ''
   currencyHidden.value = ''
   dropdown?.classList.add('hidden')
+  updateAmountCurrencyBadges('')
+}
+
+function updateAmountCurrencyBadges(code) {
+  const label = String(code || '').trim().toUpperCase()
+  const minBadge = document.getElementById('offer-min-amount-currency')
+  const maxBadge = document.getElementById('offer-max-amount-currency')
+  if (minBadge) minBadge.textContent = label
+  if (maxBadge) maxBadge.textContent = label
 }
 
 function bindModal() {
@@ -196,10 +236,12 @@ function bindModal() {
           const cur = allCurrencies.find(c => c.code === code)
           document.getElementById('offer-currency').value = code
           document.getElementById('offer-currency-search').value = cur ? `${cur.code} — ${cur.name}` : code
+          updateAmountCurrencyBadges(code)
         } else {
 
           document.getElementById('offer-currency').value = ''
           document.getElementById('offer-currency-search').value = ''
+          updateAmountCurrencyBadges('')
         }
         showEscrowInfo(pm)
       } else {
@@ -222,7 +264,7 @@ function bindModal() {
       const pm = getActivePaymentMethod()
       return pm ? currencyItems(query, pm.allowed_currencies ?? null) : []
     },
-    () => {}
+    (item) => updateAmountCurrencyBadges(item?.value ?? '')
   )
 
   syncCurrencyField(null)
@@ -267,8 +309,8 @@ function resetModal() {
   offerTypeInputs.forEach((input) => {
     input.disabled = false
   })
-  const buyRadio = document.querySelector('input[name="offer-type"][value="buy"]')
-  if (buyRadio) buyRadio.checked = true
+  const sellRadio = document.querySelector('input[name="offer-type"][value="sell"]')
+  if (sellRadio) sellRadio.checked = true
   document.getElementById('offer-card-search').value            = ''
   document.getElementById('offer-card').value                   = ''
   document.getElementById('offer-currency-search').value        = ''
@@ -286,6 +328,7 @@ function resetModal() {
   document.getElementById('btn-submit-offer').textContent       = 'Post Offer'
   document.getElementById('offer-min-amount').value             = ''
   document.getElementById('offer-max-amount').value             = ''
+  updateAmountCurrencyBadges('')
   const info = document.getElementById('offer-escrow-info')
   if (info) info.style.display = 'none'
 }
@@ -321,6 +364,7 @@ function openEditModal(offer) {
   document.getElementById('btn-submit-offer').textContent  = 'Save Changes'
   document.getElementById('offer-min-amount').value       = offer.min_amount || ''
   document.getElementById('offer-max-amount').value       = offer.max_amount || ''
+  updateAmountCurrencyBadges(offer.currency)
   if (pm) showEscrowInfo(pm)
   document.getElementById('offer-modal').classList.remove('hidden')
 }
@@ -421,7 +465,8 @@ async function loadMyOffers() {
 
   const cached = cacheGet('offers')
   if (cached) {
-    renderOfferList(list, sortMyOffers(cached.filter(o => o.creator_uid === currentUser?.uid)))
+    myOffersRaw = cached.filter(o => o.creator_uid === currentUser?.uid)
+    renderOfferList(list, myOffersRaw)
   } else {
     list.innerHTML = '<div class="list-loading"><span class="list-spinner"></span>Loading offers…</div>'
   }
@@ -429,8 +474,8 @@ async function loadMyOffers() {
   try {
     const [all, trades] = await Promise.all([listOffers(), listTrades()])
     allTrades = trades || []
-    const mine = all.filter(o => o.creator_uid === currentUser?.uid)
-    renderOfferList(list, sortMyOffers(mine))
+    myOffersRaw = all.filter(o => o.creator_uid === currentUser?.uid)
+    renderOfferList(list, myOffersRaw)
   } catch (e) {
     if (!cached) list.innerHTML = `<p class="error">Failed to load offers: ${e.message}</p>`
   }
@@ -470,9 +515,15 @@ function renderOfferList(list, mine) {
     return
   }
 
+  const filtered = sortMyOffers(applyOffersFilter(mine))
+  if (!filtered.length) {
+    list.innerHTML = `<p class="muted">No ${esc(offersActiveTab)} offers match the selected filters.</p>`
+    return
+  }
+
   list.innerHTML = `
     <div class="offer-card-stack">
-      ${mine.map(renderOfferCard).join('')}
+      ${filtered.map(renderOfferCard).join('')}
     </div>`
 
   document.addEventListener('click', e => {
@@ -481,7 +532,7 @@ function renderOfferList(list, mine) {
     }
   }, { capture: true })
 
-  mine.forEach(o => {
+  filtered.forEach(o => {
     document.getElementById(`menu-btn-${o.id}`)?.addEventListener('click', e => {
       e.stopPropagation()
       const drop = document.getElementById(`menu-drop-${o.id}`)

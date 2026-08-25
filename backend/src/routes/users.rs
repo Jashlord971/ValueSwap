@@ -1,7 +1,11 @@
 use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{ResolveRecipientRequest, ResolveRecipientResponse, UpdateProfileRequest, UsernameEntry, UserProfile};
+use crate::models::{
+    Offer, OfferStatus, ResolveRecipientRequest, ResolveRecipientResponse, Trade, TradeStatus,
+    UpdateProfileRequest, UsernameEntry, UserProfile, Warning,
+};
+use crate::moderation::is_moderator_email;
 use crate::presence::HEARTBEAT_MIN_INTERVAL_SECS;
 use crate::AppState;
 use axum::{extract::Path, routing::post, Json, Router};
@@ -35,6 +39,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/me/ping-active", post(ping_active))
         .route("/me/set-withdraw-code", post(set_withdraw_code))
         .route("/resolve", post(resolve_recipient))
+        .route("/by-username/:username", axum::routing::get(get_user_public_by_username))
+        .route("/:uid/warn", post(warn_user))
+        .route("/:uid/ban", post(ban_user))
         .route("/:uid", axum::routing::get(get_user_public))
 }
 
@@ -98,6 +105,203 @@ async fn get_user_public(ctx: Ctx, Path(uid): Path<String>) -> Result<Json<Publi
     }))
 }
 
+const WARNING_EXPIRY_SECS: u64 = 14 * 24 * 3600;
+const BAN_WARNING_THRESHOLD: usize = 3;
+
+#[derive(serde::Serialize)]
+struct PublicFeedbackEntry {
+    positive: bool,
+    comment: String,
+    created_at: u64,
+    from_uid: String,
+}
+
+#[derive(serde::Serialize)]
+struct PublicUserProfileFull {
+    uid: String,
+    username: String,
+    avatar_number: u8,
+    trade_count: u64,
+    feedback_pos: u64,
+    feedback_neg: u64,
+    last_active_at: u64,
+    active_warning_count: u64,
+    recent_feedback: Vec<PublicFeedbackEntry>,
+    active_offers: Vec<Offer>,
+}
+
+/// Public-facing profile page data, looked up by username (the /user/:username
+/// route) rather than uid — trade count and feedback are computed live from
+/// the trades collection instead of the profile's own (unmaintained) counters.
+async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> Result<Json<PublicUserProfileFull>, AppError> {
+    let lower = username.trim().trim_start_matches('@').to_lowercase();
+    if lower.is_empty() {
+        return Err(AppError::BadRequest("Username cannot be empty".into()));
+    }
+
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let entry_val = db.get(&format!("usernames/{}", lower)).await?
+        .ok_or_else(|| AppError::NotFound(format!("User '{}' not found", username)))?;
+    let entry: UsernameEntry = serde_json::from_value(entry_val).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let admin_db = RtdbClient::new_admin(&ctx.state);
+    let profile_val = admin_db.get(&format!("users/{}", entry.uid)).await?
+        .ok_or_else(|| AppError::NotFound(format!("User '{}' not found", username)))?;
+    let profile: UserProfile = serde_json::from_value(profile_val).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let now = unix_now();
+
+    let trades: Vec<Trade> = admin_db.get_collection("trades").await?
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Trade>(v).ok())
+        .filter(|t| t.creator_uid == entry.uid || t.offer_owner_uid == entry.uid)
+        .collect();
+
+    let trade_count = trades.iter().filter(|t| t.status == TradeStatus::Completed).count() as u64;
+
+    let mut feedback_entries: Vec<PublicFeedbackEntry> = trades
+        .iter()
+        .flat_map(|t| t.feedback.iter())
+        .filter(|f| f.to_uid == entry.uid)
+        .map(|f| PublicFeedbackEntry {
+            positive: f.positive,
+            comment: f.comment.clone(),
+            created_at: f.created_at,
+            from_uid: f.from_uid.clone(),
+        })
+        .collect();
+    feedback_entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let feedback_pos = feedback_entries.iter().filter(|f| f.positive).count() as u64;
+    let feedback_neg = feedback_entries.iter().filter(|f| !f.positive).count() as u64;
+    feedback_entries.truncate(10);
+
+    let active_offers: Vec<Offer> = admin_db.get_collection("offers").await?
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Offer>(v).ok())
+        .filter(|o| o.creator_uid == entry.uid && o.status == OfferStatus::Active)
+        .collect();
+
+    let active_warning_count = admin_db.get_collection(&format!("warnings/{}", entry.uid)).await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Warning>(v).ok())
+        .filter(|w| w.expires_at > now)
+        .count() as u64;
+
+    Ok(Json(PublicUserProfileFull {
+        uid: profile.uid,
+        username: profile.username,
+        avatar_number: profile.avatar_number,
+        trade_count,
+        feedback_pos,
+        feedback_neg,
+        last_active_at: profile.last_active_at,
+        active_warning_count,
+        recent_feedback: feedback_entries,
+        active_offers,
+    }))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WarnUserRequest {
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    trade_id: Option<String>,
+}
+
+/// Issues a warning against `uid`, expiring in 2 weeks. If this pushes their
+/// active (non-expired) warning count to 3 or more, they're auto-banned.
+async fn warn_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<WarnUserRequest>) -> Result<Json<serde_json::Value>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+        return Err(AppError::Forbidden("Moderator access required".into()));
+    }
+
+    let reason = req.reason.trim();
+    if reason.chars().count() > 500 {
+        return Err(AppError::BadRequest("Reason must be 500 characters or fewer".into()));
+    }
+
+    let admin_db = RtdbClient::new_admin(&ctx.state);
+    if admin_db.get(&format!("users/{}", uid)).await?.is_none() {
+        return Err(AppError::NotFound("User not found".into()));
+    }
+
+    let now = unix_now();
+    let warning = Warning {
+        id: uuid::Uuid::new_v4().to_string(),
+        uid: uid.clone(),
+        moderator_uid: ctx.user.uid.clone(),
+        reason: reason.to_string(),
+        created_at: now,
+        expires_at: now + WARNING_EXPIRY_SECS,
+        trade_id: req.trade_id.clone(),
+    };
+    admin_db.set(&format!("warnings/{}/{}", uid, warning.id), &serde_json::to_value(&warning).unwrap()).await?;
+
+    let active_warnings: usize = admin_db.get_collection(&format!("warnings/{}", uid)).await?
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Warning>(v).ok())
+        .filter(|w| w.expires_at > now)
+        .count();
+
+    let mut auto_banned = false;
+    if active_warnings >= BAN_WARNING_THRESHOLD {
+        if let Some(val) = admin_db.get(&format!("users/{}", uid)).await? {
+            if let Ok(mut profile) = serde_json::from_value::<UserProfile>(val) {
+                if !profile.banned {
+                    profile.banned = true;
+                    profile.ban_reason = Some(format!("Automatically banned after {} active warnings", active_warnings));
+                    profile.banned_at = Some(now);
+                    admin_db.set(&format!("users/{}", uid), &serde_json::to_value(&profile).unwrap()).await?;
+                    auto_banned = true;
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "warning_id": warning.id,
+        "active_warning_count": active_warnings,
+        "auto_banned": auto_banned,
+    })))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct BanUserRequest {
+    #[serde(default)]
+    reason: String,
+}
+
+/// Direct moderator ban — independent of the warning-count auto-ban, so a
+/// severe case doesn't need 3 prior warnings first.
+async fn ban_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<BanUserRequest>) -> Result<Json<UserProfile>, AppError> {
+    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+        return Err(AppError::Forbidden("Moderator access required".into()));
+    }
+
+    let reason = req.reason.trim();
+    if reason.chars().count() > 500 {
+        return Err(AppError::BadRequest("Reason must be 500 characters or fewer".into()));
+    }
+
+    let admin_db = RtdbClient::new_admin(&ctx.state);
+    let val = admin_db.get(&format!("users/{}", uid)).await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+    let mut profile: UserProfile = serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    profile.banned = true;
+    profile.ban_reason = if reason.is_empty() { None } else { Some(reason.to_string()) };
+    profile.banned_at = Some(unix_now());
+    profile.banned_by_uid = Some(ctx.user.uid.clone());
+    admin_db.set(&format!("users/{}", uid), &serde_json::to_value(&profile).unwrap()).await?;
+
+    Ok(Json(profile))
+}
+
 async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
     let (state, user) = (&ctx.state, &ctx.user);
     let db = RtdbClient::new(state, &user.id_token);
@@ -154,6 +358,10 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
         feedback_pos: 0,
         feedback_neg: 0,
         last_active_at: 0,
+        banned: false,
+        ban_reason: None,
+        banned_at: None,
+        banned_by_uid: None,
     };
 
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;

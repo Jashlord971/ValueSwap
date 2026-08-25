@@ -16,6 +16,7 @@ initChat(firebaseApp)
 
 let allOffers = []
 let paymentMethods = []
+let myUid = ''
 const profileCache = new Map()
 let selectedSide = 'buy'
 let selectedCoin = ''
@@ -36,12 +37,15 @@ const COIN_TO_GECKO = {
 onAuthChange(async (user) => {
   if (!user) { window.location.href = '/'; return }
 
+  myUid = user.uid
+
   let profile
   try { profile = await upsertUser() } catch { profile = { email: user.email } }
 
   renderNav(user, profile)
   bindFilters()
   setCoinSelection('')
+
   await loadMeta()
   await loadOffers(buildMarketQuery())
 
@@ -427,12 +431,13 @@ function renderOffers(offers) {
   }
 
   list.innerHTML = offers.map((offer) => renderOfferCard(offer)).join('')
-  list.querySelectorAll('.btn-start-trade').forEach((button) => {
+  list.querySelectorAll('.btn-start-trade:not([disabled])').forEach((button) => {
     button.addEventListener('click', () => startTrade(button.dataset.id))
   })
 }
 
 function renderOfferCard(offer) {
+  const isOwnOffer = Boolean(myUid) && offer.creator_uid === myUid
   const profile = profileCache.get(offer.creator_uid)
   const username = profile?.username || shortUid(offer.creator_uid)
   const avatarPath = avatarPathFromNumber(profile?.avatar_number || 1)
@@ -450,16 +455,21 @@ function renderOfferCard(offer) {
   const fiatRangeLabel = selectedSide === 'buy' ? 'You can buy' : 'You can sell'
   const fiatRange = formatOfferFiatRange(offer)
 
+  const profileHref = profile?.username ? `/user/${encodeURIComponent(profile.username)}` : null
+  const profileLinkOpen = profileHref ? `<a href="${escHtml(profileHref)}" title="View profile">` : ''
+  const profileLinkClose = profileHref ? '</a>' : ''
+
   return `
     <article class="p2p-offer-card">
       <div class="p2p-offer-trader">
-        <span class="avatar-presence-wrap p2p-avatar-presence-wrap" title="${escHtml(presence.label)}">
+        ${profileLinkOpen}<span class="avatar-presence-wrap p2p-avatar-presence-wrap" title="${escHtml(presence.label)}">
           <img class="p2p-offer-avatar" src="${escHtml(avatarPath)}" alt="" />
           <span class="avatar-presence-badge presence-${escHtml(presence.state)}" aria-hidden="true"></span>
-        </span>
+        </span>${profileLinkClose}
         <div class="p2p-offer-trader-copy">
           <div class="p2p-offer-trader-top">
-            <strong class="p2p-offer-username">${escHtml(username)}</strong>
+            ${profileLinkOpen}<strong class="p2p-offer-username">${escHtml(username)}</strong>${profileLinkClose}
+            ${isOwnOffer ? `<span class="p2p-offer-badge" title="This is your own offer">You</span>` : ''}
             <span class="p2p-offer-badge p2p-offer-coin-badge" title="${escHtml(coin || 'Crypto')}">
               ${coinLogo
                 ? `<img class="p2p-offer-coin-badge-logo" src="${escHtml(coinLogo)}" alt="${escHtml(coin)}" />`
@@ -490,7 +500,9 @@ function renderOfferCard(offer) {
 
         <div class="p2p-offer-stat p2p-offer-action-block">
           ${fiatRange ? `<span class="p2p-offer-subtle">${fiatRangeLabel}: ${escHtml(fiatRange)}</span>` : ''}
-          <button class="p2p-card-action btn-start-trade${selectedSide === 'sell' ? ' sell' : ''}" data-id="${escHtml(offer.id)}">${buttonLabel}</button>
+          ${isOwnOffer
+            ? `<button class="p2p-card-action btn-start-trade" disabled title="This is your own offer">Your Offer</button>`
+            : `<button class="p2p-card-action btn-start-trade${selectedSide === 'sell' ? ' sell' : ''}" data-id="${escHtml(offer.id)}">${buttonLabel}</button>`}
         </div>
       </div>
 

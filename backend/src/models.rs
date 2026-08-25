@@ -34,6 +34,27 @@ pub struct UserProfile {
     pub feedback_neg: u64,
     #[serde(default)]
     pub last_active_at: u64,
+    #[serde(default)]
+    pub banned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ban_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_by_uid: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Warning {
+    pub id: String,
+    pub uid: String,
+    pub moderator_uid: String,
+    #[serde(default)]
+    pub reason: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

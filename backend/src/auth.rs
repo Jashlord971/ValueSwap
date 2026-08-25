@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::firebase::RtdbClient;
 use crate::AppState;
 use axum::{
     async_trait,
@@ -64,6 +65,20 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
         .to_owned();
 
     let claims = verify_firebase_token(&state, &token).await?;
+
+    let admin_db = RtdbClient::new_admin(&state);
+    if let Ok(Some(val)) = admin_db.get(&format!("users/{}", claims.sub)).await {
+        let banned = val.get("banned").and_then(|v| v.as_bool()).unwrap_or(false);
+        if banned {
+            let reason = val
+                .get("ban_reason")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(": {s}"))
+                .unwrap_or_default();
+            return Err(AppError::Forbidden(format!("Your account has been banned{reason}")));
+        }
+    }
 
     req.extensions_mut().insert(AuthUser {
         uid: claims.sub,

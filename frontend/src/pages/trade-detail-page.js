@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods, resolveDispute } from '../api.js'
+import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods, resolveDispute, warnUser, banUser } from '../api.js'
 import { showAlert, showConfirm, showFeedbackModal, showDisputeModal } from '../modal.js'
 import { initChat } from '../chat.js'
 import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
@@ -429,10 +429,25 @@ function renderModeratorActions(t, offerOwnerName, takerName) {
         <button class="btn btn-success" data-award="${escHtml(t.creator_uid)}" data-award-name="${escHtml(takerName)}">Award to ${escHtml(takerName)}</button>
       </div>
     </div>
+    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:0.6rem;">
+      <p class="muted" style="margin:0;">Moderation actions — a warning expires after 2 weeks; 3 active warnings auto-bans.</p>
+      <div style="display:flex;gap:0.6rem;flex-wrap:wrap;">
+        <button class="btn-sm btn-secondary" data-warn="${escHtml(t.offer_owner_uid)}" data-warn-name="${escHtml(offerOwnerName)}">Warn ${escHtml(offerOwnerName)}</button>
+        <button class="btn-sm btn-secondary" data-warn="${escHtml(t.creator_uid)}" data-warn-name="${escHtml(takerName)}">Warn ${escHtml(takerName)}</button>
+        <button class="btn-sm btn-danger" data-ban="${escHtml(t.offer_owner_uid)}" data-ban-name="${escHtml(offerOwnerName)}">Ban ${escHtml(offerOwnerName)}</button>
+        <button class="btn-sm btn-danger" data-ban="${escHtml(t.creator_uid)}" data-ban-name="${escHtml(takerName)}">Ban ${escHtml(takerName)}</button>
+      </div>
+    </div>
   `
 
   container.querySelectorAll('button[data-award]').forEach((btn) => {
     btn.addEventListener('click', () => handleAwardDispute(btn.dataset.award, btn.dataset.awardName, t.id))
+  })
+  container.querySelectorAll('button[data-warn]').forEach((btn) => {
+    btn.addEventListener('click', () => handleWarnUser(btn.dataset.warn, btn.dataset.warnName, t.id))
+  })
+  container.querySelectorAll('button[data-ban]').forEach((btn) => {
+    btn.addEventListener('click', () => handleBanUser(btn.dataset.ban, btn.dataset.banName))
   })
 }
 
@@ -444,6 +459,32 @@ async function handleAwardDispute(winnerUid, winnerName, tradeId) {
     await displayTrade()
   } catch (e) {
     await showAlert(`Resolve failed: ${e.message}`)
+  }
+}
+
+async function handleWarnUser(uid, name, tradeId) {
+  const reason = window.prompt(`Reason for warning ${name}? (visible to other moderators)`, '')
+  if (reason == null) return
+  try {
+    const res = await warnUser(uid, reason.trim(), tradeId)
+    await showAlert(res.auto_banned
+      ? `${name} has been warned and automatically banned (${res.active_warning_count} active warnings).`
+      : `${name} has been warned (${res.active_warning_count} active warning${res.active_warning_count === 1 ? '' : 's'}).`)
+  } catch (e) {
+    await showAlert(`Failed to warn user: ${e.message}`)
+  }
+}
+
+async function handleBanUser(uid, name) {
+  const reason = window.prompt(`Reason for banning ${name}?`, '')
+  if (reason == null) return
+  const ok = await showConfirm(`Ban ${name}? They will be immediately signed out and unable to use the platform.`)
+  if (!ok) return
+  try {
+    await banUser(uid, reason.trim())
+    await showAlert(`${name} has been banned.`)
+  } catch (e) {
+    await showAlert(`Failed to ban user: ${e.message}`)
   }
 }
 

@@ -218,13 +218,13 @@ async fn ensure_no_duplicate_active_offer(db: &RtdbClient<'_>, creator_uid: &str
 
 fn offer_passes_market_filters(
     offer: &Offer,
-    user_uid: &str,
+    _user_uid: &str,
     desired_offer_type: &Option<OfferType>,
     requested_coin: Option<&str>,
     requested_currency: Option<&str>,
     requested_pm: Option<&str>,
 ) -> bool {
-    if offer.status != OfferStatus::Active || offer.creator_uid == user_uid {
+    if offer.status != OfferStatus::Active {
         return false;
     }
     if let Some(target) = desired_offer_type {

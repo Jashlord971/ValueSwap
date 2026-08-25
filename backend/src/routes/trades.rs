@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
@@ -57,8 +58,12 @@ async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
 
     trades.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
+    // One fetch of the whole users collection instead of 2 round-trips per
+    // trade (resolve_trade_usernames) — with N trades that was N+1-style
+    // sequential Firebase calls and was the main reason this list was slow.
+    let users_map = fetch_users_meta_map(&db).await;
     for trade in &mut trades {
-        resolve_trade_usernames(trade, &db).await;
+        apply_trade_usernames_from_map(trade, &users_map);
     }
 
     Ok(Json(trades))
@@ -228,8 +233,9 @@ async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
 
     trades.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
+    let users_map = fetch_users_meta_map(&db).await;
     for trade in &mut trades {
-        resolve_trade_usernames(trade, &db).await;
+        apply_trade_usernames_from_map(trade, &users_map);
     }
 
     Ok(Json(trades))
@@ -884,6 +890,62 @@ fn apply_effective_trade_status(trade: &mut Trade) -> bool {
         return true;
     }
     false
+}
+
+type UserMeta = (Option<String>, Option<u8>, Option<u64>);
+
+fn user_meta_from_value(v: &serde_json::Value) -> UserMeta {
+    let username = v
+        .get("username")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    let avatar_number = v
+        .get("avatar_number")
+        .and_then(|x| x.as_u64())
+        .and_then(|n| u8::try_from(n).ok())
+        .filter(|n| (1..=21).contains(n));
+
+    let last_active_at = v
+        .get("last_active_at")
+        .and_then(|x| x.as_u64())
+        .filter(|ts| *ts > 0);
+
+    (username, avatar_number, last_active_at)
+}
+
+// One fetch of the whole users collection instead of 2 round-trips per trade
+// (see resolve_trade_usernames below) — with N trades that was N+1-style
+// sequential Firebase calls and was the main reason list_trades/list_disputes
+// were slow to load.
+async fn fetch_users_meta_map(db: &RtdbClient<'_>) -> HashMap<String, UserMeta> {
+    let mut map = HashMap::new();
+    if let Ok(Some(serde_json::Value::Object(users))) = db.get("users").await {
+        for (uid, v) in users {
+            map.insert(uid, user_meta_from_value(&v));
+        }
+    }
+    map
+}
+
+fn apply_trade_usernames_from_map(trade: &mut Trade, map: &HashMap<String, UserMeta>) {
+    let (creator_username, creator_avatar_number, creator_last_active_at) = map
+        .get(&trade.creator_uid)
+        .cloned()
+        .unwrap_or((None, None, None));
+    let (offer_owner_username, offer_owner_avatar_number, offer_owner_last_active_at) = map
+        .get(&trade.offer_owner_uid)
+        .cloned()
+        .unwrap_or((None, None, None));
+
+    trade.creator_username = creator_username;
+    trade.creator_avatar_number = creator_avatar_number;
+    trade.offer_owner_username = offer_owner_username;
+    trade.offer_owner_avatar_number = offer_owner_avatar_number;
+    trade.creator_last_active_at = creator_last_active_at;
+    trade.offer_owner_last_active_at = offer_owner_last_active_at;
 }
 
 async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {

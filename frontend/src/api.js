@@ -119,8 +119,12 @@ export const upsertUser       = ()       => cached('profile', TTL.profile, async
 export const getMyProfile     = ()       => cached('profile', TTL.profile, () => request('GET',  '/users/me'))
 export const updateMyProfile  = (data)   => request('PATCH', '/users/me', data).then(r => { cacheSet('profile', r, TTL.profile); return r })
 export const getUserProfile   = (uid)    => request('GET', `/users/${uid}`)
+export const getUserProfileByUsername = (username) => request('GET', `/users/by-username/${encodeURIComponent(username)}`)
 export const resolveRecipient  = (identifier, coin) => request('POST', '/users/resolve', { identifier, coin })
 export const setWithdrawCode   = (code) => request('POST', '/users/me/set-withdraw-code', { code }).then(r => { cacheSet('profile', r, TTL.profile); return r })
+
+export const warnUser = (uid, reason, tradeId) => request('POST', `/users/${uid}/warn`, { reason, trade_id: tradeId || null })
+export const banUser  = (uid, reason)          => request('POST', `/users/${uid}/ban`, { reason })
 
 export const listTrades  = ()       => cached('trades', TTL.trades, () => request('GET', '/trades'))
 export const createTrade = (data)   => request('POST', '/trades', data).then(r    => { cacheInvalidate('trades'); return r })
