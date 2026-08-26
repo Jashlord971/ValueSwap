@@ -6,6 +6,7 @@ import {
   markChatRead,
 } from './api.js'
 import { showAlert, showFeedbackModal } from './modal.js'
+import { playNotifySound, primeNotifySound } from './sound.js'
 import { getAuth, onAuthStateChanged } from 'firebase/auth'
 import {
   getDatabase,
@@ -58,6 +59,7 @@ const EXPIRES_WITH_TIME_STATUSES = new Set(['open', 'pending'])
 export function initChat(firebaseApp, uid) {
   chatFirebaseApp = firebaseApp || chatFirebaseApp
   currentUid = uid || currentUid || getAuth(firebaseApp).currentUser?.uid || null
+  primeNotifySound()
 
   if (!authWatcherBound) {
     authWatcherBound = true
@@ -253,6 +255,7 @@ async function handleSend() {
     console.log('[chat] sending message to backend, tradeId:', activeTradeId, 'imageUrl:', imageUrl)
     await sendMessage(activeTradeId, text || null, imageUrl, mediaFile ? mediaType : null, mediaFile ? visibility : null)
     console.log('[chat] message sent successfully')
+    playNotifySound()
     textInput.value  = ''
     fileInput.value  = ''
 
@@ -467,7 +470,15 @@ function startRealtimeChatListeners() {
       renderChatFromState()
     }
 
-    unsubscribers.push(onChildAdded(messagesQuery, upsertMessage, () => {
+    const onNewMessage = (snap) => {
+      const msg = snap.val()
+      if (msg?.id && String(msg.sender_uid || '') !== String(currentUid || '')) {
+        playNotifySound()
+      }
+      upsertMessage(snap)
+    }
+
+    unsubscribers.push(onChildAdded(messagesQuery, onNewMessage, () => {
       chatRealtimeActive = false
       scheduleNextChatPoll()
     }))

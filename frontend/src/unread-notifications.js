@@ -2,6 +2,7 @@ import { listTrades, getMessages, markChatRead } from './api.js'
 import { initializeApp, getApps } from 'firebase/app'
 import { getDatabase, ref, query, orderByChild, equalTo, onValue } from 'firebase/database'
 import { firebaseConfig } from './firebase-config.js'
+import { playNotifySound } from './sound.js'
 
 const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'expired'])
 
@@ -49,6 +50,7 @@ function closeTradePopupModal() {
 function showIncomingTradePopupModal(trade) {
   if (!trade?.id) return
 
+  playNotifySound()
   closeTradePopupModal()
   const overlay = document.createElement('div')
   overlay.id = 'trade-popup-modal-overlay'
@@ -109,6 +111,7 @@ function closeTransactionPopupModal() {
 function showIncomingTransactionPopupModal(tx) {
   if (!tx?.id) return
 
+  playNotifySound()
   closeTransactionPopupModal()
   const overlay = document.createElement('div')
   overlay.id = 'transaction-popup-modal-overlay'
