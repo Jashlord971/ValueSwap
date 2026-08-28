@@ -53,8 +53,7 @@ pub struct UserProfile {
 }
 
 impl UserProfile {
-    /// Strip fields that should never leave the server, even encrypted —
-    /// call this on every UserProfile returned as an HTTP response.
+
     pub fn redacted(mut self) -> Self {
         self.totp_secret_enc = None;
         self
@@ -81,9 +80,7 @@ pub struct UsernameEntry {
 }
 
 impl UsernameEntry {
-    /// Some `usernames/{lower}` nodes predate the `{uid, display}` shape and
-    /// still hold a bare uid string. Parse either shape instead of erroring
-    /// (or, worse, silently failing lookups) on the legacy ones.
+
     pub fn from_value(v: &serde_json::Value, fallback_display: &str) -> Option<Self> {
         match v {
             serde_json::Value::String(uid) => Some(UsernameEntry {
@@ -248,11 +245,6 @@ pub enum WithdrawalRequestStatus {
     Failed,
 }
 
-/// External (on-chain) withdrawals are queued rather than signed
-/// synchronously — see the sweep/treasury model in wallet.rs. The ledger
-/// is debited the moment this is created, so it can't be double-spent
-/// while queued; a background worker pays it out of the treasury once
-/// funds are available and fills in tx_hash/processed_at.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WithdrawalRequest {
     pub id: String,
@@ -383,12 +375,6 @@ pub struct CreateTradeRequest {
     pub coin: String,
 }
 
-// A swap offer is a standing liquidity range, not a single fixed trade — like
-// an Offer's min/max, not a Trade's exact amount. A taker can fill any amount
-// of from_coin between min_amount and whatever's left, and the offer stays
-// Open (with remaining_amount shrinking) until it's drained below what's
-// worth filling or the creator cancels it. Multiple different takers can each
-// fill part of the same offer over its lifetime.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SwapOffer {
     pub id: String,
@@ -398,15 +384,12 @@ pub struct SwapOffer {
 
     pub to_coin: String,
 
-    /// Smallest from_coin amount a single accept can take.
     pub min_amount: f64,
-    /// Total from_coin size when posted — also what to_amount (below) prices against.
+
     pub max_amount: f64,
-    /// to_coin amount that fully filling max_amount would cost, at this
-    /// offer's rate (max_amount and to_amount together define the fixed
-    /// price; a partial fill is charged pro-rata: take_amount * to_amount / max_amount).
+
     pub to_amount: f64,
-    /// from_coin still available to be filled — starts equal to max_amount.
+
     pub remaining_amount: f64,
     #[serde(default)]
     pub profit_pct: f64,
@@ -414,8 +397,7 @@ pub struct SwapOffer {
     pub fee_pct: f64,
     pub status: SwapOfferStatus,
     pub created_at: u64,
-    /// Most recent taker/fill time, for display — not exclusivity. Full fill
-    /// history lives in each party's /wallet/transactions (kind="swap").
+
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub last_taker_uid: Option<String>,
@@ -431,8 +413,7 @@ pub struct SwapOffer {
 #[serde(rename_all = "lowercase")]
 pub enum SwapOfferStatus {
     Open,
-    /// Turned off by the creator — funds stay locked in escrow, just hidden
-    /// from the board and not takeable, until turned back to Open.
+
     Paused,
     Filled,
     Cancelled,
@@ -449,9 +430,7 @@ pub struct CreateSwapOfferRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AcceptSwapOfferRequest {
-    /// How much of from_coin to take — must be between the offer's
-    /// min_amount and its current remaining_amount (or exactly
-    /// remaining_amount, to sweep up dust below min_amount).
+
     pub amount: f64,
 }
 

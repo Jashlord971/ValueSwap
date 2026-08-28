@@ -114,8 +114,29 @@ fn infer_project_id_from_database_url(database_url: &str) -> Option<String> {
     }
 }
 
+#[cfg(unix)]
+fn disable_core_dumps() {
+    let limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let ok = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) == 0 };
+    if ok {
+        tracing::info!("Core dumps disabled for this process (RLIMIT_CORE=0)");
+    } else {
+        tracing::warn!("Failed to disable core dumps (setrlimit RLIMIT_CORE) — continuing anyway");
+    }
+}
+
+#[cfg(not(unix))]
+fn disable_core_dumps() {
+    tracing::warn!(
+        "Core dumps not disabled from application code on this platform — \
+         disable Windows Error Reporting crash dumps for this process at the OS level in production."
+    );
+}
+
 #[tokio::main]
 async fn main() {
+    disable_core_dumps();
+
     if dotenvy::dotenv().is_err() {
         let backend_env = std::path::Path::new("backend").join(".env");
         let _ = dotenvy::from_path(&backend_env);
@@ -211,14 +232,15 @@ async fn main() {
     {
         let sweep_state = state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
             loop {
                 interval.tick().await;
                 routes::sweep_all_deposits(sweep_state.clone()).await;
             }
         });
     }
-    tracing::info!("Deposit sweep cron enabled (every 5 minutes)");
+    tracing::info!("Deposit sweep cron enabled (4x/day, every 6 hours)");
 
     {
         let withdrawal_state = state.clone();

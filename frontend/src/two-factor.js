@@ -1,7 +1,3 @@
-// two-factor.js — shared helpers for TOTP (Google Authenticator) 2FA:
-// a code-entry modal that drives a gated action (release escrow, off-chain
-// sends, disabling a code requirement) and stays open across wrong-code
-// retries, and a blocking login gate shown once per browser session.
 
 import { verifyLogin2fa } from './api.js'
 
@@ -13,23 +9,10 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
 }
 
-// A code is wrong (or the server is temporarily locking out further
-// guesses) vs. some unrelated failure (insufficient balance, trade already
-// closed, network blip) — only the former should keep this modal open for
-// another try; anything else should surface through the caller's own error
-// handling instead of looking like a 2FA problem.
 function isCodeError(message) {
   return /incorrect code|too many incorrect codes/i.test(String(message || ''))
 }
 
-// Prompts for a 2FA code and calls performFn(code) — the actual gated
-// request (e.g. completeTrade(id, code)). The server enforces a 3-attempt
-// limit before a short lockout (see twofa.rs), and its error message is
-// shown right in the modal so the user can just retype and try again
-// without re-triggering the whole action from scratch.
-//
-// Resolves to { result } on success, { cancelled: true } if the user backs
-// out, or { error } for a non-code failure the caller should handle itself.
 export function runTotpGatedAction(actionLabel, performFn) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div')
@@ -102,9 +85,6 @@ function sessionKey(uid) {
   return `2fa-verified:${uid}`
 }
 
-// Call right after sign-in, before rendering anything sensitive. Resolves
-// once the user has entered a valid code (or immediately, if 2FA isn't
-// enabled, or already verified earlier in this browser tab's session).
 export function gateLoginTwoFactor(profile) {
   if (!profile?.totp_enabled || !profile?.uid) return Promise.resolve()
 
@@ -157,7 +137,6 @@ export function gateLoginTwoFactor(profile) {
 
     btn.addEventListener('click', submit)
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit() })
-    // Deliberately no backdrop-close and no skip button — this is a real
-    // gate, not a dismissible modal.
+
   })
 }

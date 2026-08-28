@@ -89,8 +89,6 @@ async fn send_message(ctx: Ctx, Path(trade_id): Path<String>, Json(req): Json<Se
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), true).await?;
     let sender_uid = ctx.user.uid.clone();
 
-    // General flood guard, separate from the post-dispute message cap below —
-    // this covers ordinary spamming of a single counterparty's chat.
     crate::rate_limit::check_rate_limit(
         &ctx.state, &format!("chat-send:{}:{}", sender_uid, trade_id), 20, 60, "sending messages in this chat",
     ).await?;
@@ -552,12 +550,6 @@ async fn post_system_message(
     post_system_message_with_id(db, trade_id, Uuid::new_v4().to_string(), sender_uid, sender_role, text).await
 }
 
-// Same as post_system_message, but the caller picks the message id instead
-// of a fresh random UUID. Used where the same notice can legitimately be
-// triggered more than once concurrently (e.g. announce_moderator_join runs
-// on every chat-load request, not just once) — a deterministic id means two
-// racing calls both write to the same RTDB key instead of each creating
-// their own message, so the notice can never appear duplicated.
 async fn post_system_message_with_id(
     db: &RtdbClient<'_>,
     trade_id: &str,

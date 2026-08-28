@@ -258,9 +258,7 @@ function renderTradeSettings() {
   const releaseToggle = document.getElementById('toggle-release-code')
   if (releaseToggle) {
     releaseToggle.checked = !!p.require_release_code
-    // Nothing to enable without 2FA set up first — and if 2FA is off the
-    // backend guarantees this is already off too, so there's nothing to
-    // turn off either.
+
     releaseToggle.disabled = !p.totp_enabled
     releaseToggle.closest('.toggle-switch')?.setAttribute(
       'title', p.totp_enabled ? '' : 'Set up 2FA below first'
@@ -296,11 +294,6 @@ function renderTwoFactorStatus() {
   detailsBlock?.classList.add('hidden')
 }
 
-// Wires a trade-setting toggle that (a) can only be turned on once 2FA is
-// set up (backend-enforced too — this is just so it fails before a request
-// round-trip) and (b) requires a fresh 2FA code to turn back off, same as
-// disabling 2FA itself does — so a hijacked session alone can't silently
-// strip the protection.
 function bindGatedToggle(toggleId, fieldName, { onLabel, offLabel, actionLabel }) {
   const toggle = document.getElementById(toggleId)
   if (!toggle) return

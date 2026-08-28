@@ -120,10 +120,7 @@ export async function getIdToken() {
   try {
     return await user.getIdToken(false)
   } catch (e) {
-    // A cached token that's expired (or a flaky network blip while Firebase
-    // tries to silently refresh it) surfaces as auth/network-request-failed.
-    // One forced refresh recovers most of these without forcing the user to
-    // sign out/in — which was previously the only workaround.
+
     if (e?.code === 'auth/network-request-failed') {
       return await user.getIdToken(true)
     }

@@ -1,16 +1,3 @@
-// One-time maintenance script: find (and optionally delete) malformed entries
-// under the `offers` node in the Firebase RTDB.
-//
-// "Malformed" = the raw JSON does not deserialize into the app's `Offer`
-// struct (missing/mistyped required field: id, creator_uid, offer_type,
-// card, profit_pct, status, created_at). These are already silently
-// dropped by the app everywhere it reads offers (`.filter_map(...).ok()`),
-// so they're just dead weight in the DB — but we never delete anything
-// without an explicit --delete flag.
-//
-// Usage (run from backend/):
-//   cargo run --bin cleanup_malformed_offers                 # dry run, lists what would be deleted
-//   cargo run --bin cleanup_malformed_offers -- --delete      # actually deletes malformed entries
 
 #[path = "../models.rs"]
 mod models;

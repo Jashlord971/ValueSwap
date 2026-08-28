@@ -134,11 +134,6 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
         return Err(AppError::BadRequest("Username cannot be empty".into()));
     }
 
-    // Stopgap until this reads from a per-user index instead of scanning
-    // the entire trades+offers collections on every profile view (see the
-    // comment on PublicUserProfileFull's construction below) — without
-    // this, repeatedly hitting a profile page is a cheap way to force a
-    // full collection scan on every request.
     crate::rate_limit::check_rate_limit(
         &ctx.state, &format!("profile-view:{}", ctx.user.uid), 30, 60, "viewing profiles",
     ).await?;
@@ -161,13 +156,6 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
 
     let now = unix_now();
 
-    // TODO(perf): this scans every trade and every offer on the platform
-    // for a single profile view. The real fix is a per-user secondary
-    // index (e.g. user_trades/{uid} maintained on trade create/complete)
-    // or switching to indexed RTDB queries (orderByChild("creator_uid")/
-    // ("offer_owner_uid")) — the latter needs .indexOn configured on the
-    // live database rules first, which isn't visible from this repo, so
-    // it's not safe to switch blind. Rate-limited above in the meantime.
     let trades: Vec<Trade> = admin_db.get_collection("trades").await?
         .into_iter()
         .filter_map(|v| serde_json::from_value::<Trade>(v).ok())
@@ -235,8 +223,6 @@ async fn warn_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<WarnUserRe
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
 
-    // Shared with ban_user — a compromised or careless moderator account
-    // shouldn't be able to fire off a burst of warnings/bans.
     crate::rate_limit::check_rate_limit(
         &ctx.state, &format!("moderator-action:{}", ctx.user.uid), 20, 3600, "issuing warnings/bans",
     ).await?;
@@ -404,10 +390,6 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
     Ok(Json(profile.redacted()))
 }
 
-/// Refreshes `last_ip`/`detected_country` when the caller's IP has changed
-/// since the last time we saw them. Skipped entirely when the IP is
-/// unchanged, so this only ever does the geolocation lookup once per new
-/// IP rather than on every request.
 async fn update_detected_location(profile: &mut UserProfile, ip: Option<&str>, state: &AppState) {
     let Some(ip) = ip else { return };
     if profile.last_ip.as_deref() == Some(ip) {
@@ -418,9 +400,6 @@ async fn update_detected_location(profile: &mut UserProfile, ip: Option<&str>, s
     profile.location_updated_at = Some(unix_now());
 }
 
-/// Looks up the country for a public IP via a free geolocation API. Private/
-/// loopback addresses (localhost, LAN, dev environments) are skipped since
-/// they can't be geolocated and would otherwise return a bogus result.
 async fn geolocate_country(http_client: &reqwest::Client, ip: &str) -> Option<String> {
     let parsed: std::net::IpAddr = ip.parse().ok()?;
     let is_routable = match parsed {
@@ -528,9 +507,7 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
         if v && !profile.totp_enabled {
             return Err(AppError::BadRequest("Set up 2-Factor Authentication in Settings before enabling this.".into()));
         }
-        // Turning an active protection back off needs the same proof as
-        // disabling 2FA itself does — otherwise anyone with the session
-        // could silently strip it without ever seeing the authenticator app.
+
         if !v && profile.require_release_code && profile.totp_enabled {
             super::twofa::require_valid_totp_if_gated(
                 state, user.email.as_deref(), &user.uid, true, &profile, req.totp_code.as_deref(),
@@ -563,7 +540,6 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
     Ok(Json(profile.redacted()))
 }
-
 
 pub async fn resolve_recipient(ctx: Ctx, Json(req): Json<ResolveRecipientRequest>) -> Result<Json<ResolveRecipientResponse>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);

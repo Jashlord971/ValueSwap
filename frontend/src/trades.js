@@ -55,7 +55,6 @@ function applyOffersFilter(offers) {
   })
 }
 
-
 async function loadMeta() {
   try {
     [paymentMethods, allCurrencies] = await Promise.all([listPaymentMethods(), listCurrencies()])

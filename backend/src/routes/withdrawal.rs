@@ -24,14 +24,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/withdrawals", get(list_withdrawals))
 }
 
-// The legacy per-user encrypted-mnemonic path (store_mnemonic/load_mnemonic,
-// wallet_secrets/{uid}) has been removed — every wallet is now derived from
-// the master seed + wallet_indices/{uid}, and neither sweeping nor the
-// treasury withdrawal queue ever needs a per-user mnemonic. encrypt_mnemonic/
-// decrypt_mnemonic below are still used directly (e.g. by twofa.rs for TOTP
-// secrets), just no longer wrapped in the RTDB-backed helpers that used to
-// store a whole mnemonic under a user's uid.
-
 pub fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
 
@@ -83,9 +75,6 @@ async fn withdraw_handler(
 ) -> Result<Json<WithdrawResponse>, AppError> {
     let coin = req.coin.to_lowercase();
 
-    // Shares a bucket with /wallet/send and /wallet/smart-send — this is
-    // about how often money can leave via *any* path, not each one
-    // separately, so switching endpoints doesn't reset the limit.
     crate::rate_limit::check_rate_limit(
         &state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
     ).await?;
@@ -114,15 +103,6 @@ async fn fetch_user_profile(db: &RtdbClient<'_>, uid: &str) -> Result<UserProfil
     serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-/// Queues an external withdrawal instead of signing it synchronously. The
-/// ledger is debited right away (so the same balance can't be queued
-/// twice), and a WithdrawalRequest is written for the background
-/// treasury::process_withdrawal_queue worker to actually pay out once the
-/// treasury has the funds (see treasury.rs for why: withdrawals used to
-/// sign directly from the requesting user's own deposit address, which
-/// only works if their ledger balance matches what's physically on that
-/// one address — untrue once money arrives via internal transfer or a
-/// trade payout).
 pub async fn do_withdraw(
     db: &RtdbClient<'_>,
     _state: &Arc<AppState>,
@@ -564,15 +544,11 @@ fn validate_address(coin: &str, address: &str) -> Result<(), AppError> {
             }
         }
         "btc" => {
-
-            if !address.starts_with("bc1")
-                && !address.starts_with('1')
-                && !address.starts_with('3')
-            {
-                return Err(AppError::BadRequest(
-                    "Invalid BTC address (must start with bc1, 1, or 3)".into(),
-                ));
-            }
+            use std::str::FromStr;
+            bitcoin::Address::from_str(address)
+                .map_err(|_| AppError::BadRequest("Invalid BTC address".into()))?
+                .require_network(bitcoin::Network::Bitcoin)
+                .map_err(|_| AppError::BadRequest("BTC address is not for mainnet".into()))?;
         }
         _ => return Err(AppError::BadRequest(format!("Unknown coin: {}", coin))),
     }

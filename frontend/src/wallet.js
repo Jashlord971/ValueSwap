@@ -163,9 +163,7 @@ function showSendModal(coin) {
   const addrHint = coin.id === 'btc' ? 'bc1q…' : '0x…'
   const coinPriceUsd = Number(prices[coin.geckoId]?.usd) || null
   const maxBalUsd = coinPriceUsd ? maxBal * coinPriceUsd : null
-  // Default to entering the amount in fiat when we have a price to convert
-  // with — most people think in dollars first — falling back to the coin
-  // unit when there's no price feed to switch with anyway.
+
   const defaultUnit = coinPriceUsd ? 'usd' : 'coin'
 
   overlay.querySelector('.modal').innerHTML = `
@@ -311,8 +309,7 @@ function showSendModal(coin) {
       const profile = await getMyProfile()
       codeRequired = !!profile?.withdraw_code_required
     } catch {
-      // If we can't confirm the setting, fall through and let the backend
-      // enforce it — it'll return a clear error if a code was actually required.
+
     }
 
     const handleSendResult = (res) => {

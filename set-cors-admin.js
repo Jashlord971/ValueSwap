@@ -1,4 +1,4 @@
-// set-cors-admin.js — sets CORS on Firebase Storage using firebase-admin SDK
+
 const admin = require('firebase-admin')
 const serviceAccount = require('./serviceAccount.json')
 

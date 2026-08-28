@@ -58,9 +58,6 @@ async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
 
     trades.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-    // One fetch of the whole users collection instead of 2 round-trips per
-    // trade (resolve_trade_usernames) — with N trades that was N+1-style
-    // sequential Firebase calls and was the main reason this list was slow.
     let users_map = fetch_users_meta_map(&ctx.state).await;
     for trade in &mut trades {
         apply_trade_usernames_from_map(trade, &users_map);
@@ -903,10 +900,6 @@ async fn fetch_user_profile(db: &RtdbClient<'_>, uid: &str) -> Result<UserProfil
     serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-// Caps how much capital a single user (or a single pair of users) can have
-// locked in escrow at once — mainly to limit malicious/careless coin-locking
-// (opening many trades to tie up sellers' balances) rather than payment
-// throughput, which real trading volume rarely approaches anyway.
 const MAX_ACTIVE_TRADES_PER_USER: usize = 8;
 const MAX_ACTIVE_TRADES_PER_PAIR: usize = 3;
 
@@ -993,11 +986,6 @@ async fn fetch_users_meta_map(state: &AppState) -> HashMap<String, UserMeta> {
         return cached;
     }
 
-    // Admin-scoped: RTDB rules typically restrict users/$uid reads to that
-    // user themselves, which would silently deny a whole-collection read
-    // (or a counterparty's single node) under a normal user token — and
-    // every caller here just wants the public username/avatar/last-seen
-    // fields to label a trade counterparty, not anything sensitive.
     let admin_db = RtdbClient::new_admin(state);
     let mut map = HashMap::new();
     if let Ok(Some(serde_json::Value::Object(users))) = admin_db.get("users").await {
@@ -1028,10 +1016,7 @@ fn apply_trade_usernames_from_map(trade: &mut Trade, map: &HashMap<String, UserM
 }
 
 async fn resolve_trade_usernames(trade: &mut Trade, state: &AppState) {
-    // Admin-scoped for the same reason as fetch_users_meta_map above: a
-    // trade party reading the *other* party's users/$uid node under their
-    // own user token is routinely denied by RTDB rules, which silently
-    // resolved to "no username" everywhere this was called from.
+
     let admin_db = RtdbClient::new_admin(state);
 
     async fn fetch_user_meta(db: &RtdbClient<'_>, uid: &str) -> UserMeta {

@@ -26,9 +26,7 @@ let pollTimer = null
 let priceCache = null
 let allOffers = []
 const filters = { getCoin: '', giveCoin: '', minUsd: '', maxUsd: '' }
-// Per-card unit for the "amount to take" input, keyed by offer id — defaults
-// to USD (set the first time a card is built) so raw BTC/ETH amounts aren't
-// the only way to size a fill; a taker can switch a given card back to coin units.
+
 const takeUnitByOfferId = new Map()
 
 onAuthChange(async (user) => {
@@ -114,7 +112,6 @@ async function hydrateProfiles(offers) {
   }))
 }
 
-/** USD value of what's actually still fillable, using from_coin's price. */
 function usdRangeFor(offer) {
   const price = priceCache?.[COIN_TO_GECKO[String(offer.from_coin || '').toUpperCase()]]?.usd
   if (!price) return null
@@ -140,7 +137,7 @@ function applyFilters(offers) {
     const maxUsd = Number.parseFloat(filters.maxUsd)
     if (Number.isFinite(minUsd) || Number.isFinite(maxUsd)) {
       const range = usdRangeFor(o)
-      if (!range) return true // no price to evaluate against — don't hide it over a filter we can't apply
+      if (!range) return true
       if (Number.isFinite(minUsd) && range.max < minUsd) return false
       if (Number.isFinite(maxUsd) && range.min > maxUsd) return false
     }
@@ -149,9 +146,7 @@ function applyFilters(offers) {
 }
 
 function renderSwaps(list, allOffersIn) {
-  // Defensive: an offer with nothing meaningful left shouldn't render — the
-  // backend already excludes non-Open offers, but this also covers any
-  // leftover dust-remainder rows from before the Filled-threshold was fixed.
+
   const live = allOffersIn.filter((o) => Number(o.remaining_amount) > 1e-8 && Number(o.max_amount) > 0)
   const offers = applyFilters(live)
   if (!offers.length) {
@@ -194,8 +189,6 @@ function buildSwapCard(offer) {
     : null
   const id = escHtml(offer.id)
 
-  // Default a new card to USD (helps most for BTC/ETH's awkward small
-  // decimals); leaves an already-toggled card as the taker left it on refresh.
   if (!takeUnitByOfferId.has(offer.id)) {
     takeUnitByOfferId.set(offer.id, fromPriceFor(offer) ? 'usd' : 'coin')
   }
@@ -243,7 +236,6 @@ function buildSwapCard(offer) {
   `
 }
 
-/** Converts a take-amount input's current display value to from_coin units. */
 function takeAmountAsCoin(offer, input) {
   const unit = takeUnitByOfferId.get(offer.id) || 'coin'
   const price = fromPriceFor(offer)
@@ -280,9 +272,6 @@ function handleToggleTakeUnit(id, offers) {
   const price = fromPriceFor(offer)
   if (!price) return
 
-  // Patch the existing card in place (rather than a full renderSwaps rebuild)
-  // so the amount the taker already typed carries over, just re-displayed —
-  // a full rebuild would reset every card back to its default full-amount value.
   const coinAmount = takeAmountAsCoin(offer, input)
   const nextUnit = takeUnitByOfferId.get(id) === 'usd' ? 'coin' : 'usd'
   takeUnitByOfferId.set(id, nextUnit)

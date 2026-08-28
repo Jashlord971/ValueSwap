@@ -36,10 +36,7 @@ async function request(method, path, body) {
   })
   if (res.status === 204) return null
   const text = await res.text()
-  // A 5xx with no/garbled JSON body means the server errored below our normal
-  // error handling (a crash, a mid-request restart, a proxy failure) — there's
-  // no useful detail to show, so keep it human rather than surfacing the raw
-  // "empty response"/status-code diagnostic.
+
   if (res.status >= 500 && (!text.trim() || !isJsonBody(text))) {
     throw new Error('Something went wrong on our end. Please try again in a moment.')
   }

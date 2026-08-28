@@ -25,9 +25,7 @@ let currentUser = null
 const profileCache = new Map()
 let priceCache = null
 let editingOfferId = null
-// Which unit the min/max range inputs are currently showing — defaults to USD
-// since raw BTC/ETH amounts (e.g. 0.00015) are hard to reason about; can be
-// switched to the coin's own units per coin like the wallet Send modal.
+
 let swapAmountUnit = 'usd'
 
 onAuthChange(async (user) => {
@@ -103,10 +101,7 @@ function renderMySwaps(list, offers) {
 
 function buildMySwapCard(offer) {
   const isCreator = offer.creator_uid === currentUser.uid
-  // Note: last_taker_uid only tracks the most recent fill. If you filled part
-  // of an open offer and someone else fills more later, this card's "posted
-  // by"/counterparty info will reflect them, not you — the exact amount you
-  // personally sent and received is always accurate in /wallet/transactions.
+
   const roleLabel = isCreator ? 'You posted this' : 'You took part of this'
   const fromCoin = String(offer.from_coin || '').toUpperCase()
   const toCoin = String(offer.to_coin || '').toUpperCase()
@@ -273,12 +268,12 @@ function ensureCreateSwapModal() {
     const maxDisplay = Number.parseFloat(maxInput.value)
 
     if (swapAmountUnit === 'usd' && price) {
-      // usd -> coin
+
       swapAmountUnit = 'coin'
       if (Number.isFinite(minDisplay)) minInput.value = formatCoinAmount(minDisplay / price)
       if (Number.isFinite(maxDisplay)) maxInput.value = formatCoinAmount(maxDisplay / price)
     } else if (price) {
-      // coin -> usd
+
       swapAmountUnit = 'usd'
       if (Number.isFinite(minDisplay)) minInput.value = (minDisplay * price).toFixed(2)
       if (Number.isFinite(maxDisplay)) maxInput.value = (maxDisplay * price).toFixed(2)
@@ -317,8 +312,6 @@ function updateSwapUnitLabels() {
   }
 }
 
-/** Reads the min/max inputs in whatever unit is currently displayed and
- * returns them converted to from_coin units (what the backend always wants). */
 function readSwapRangeAsCoin() {
   const fromPrice = currentFromPrice()
   const minDisplay = Number.parseFloat(document.getElementById('swap-min-amount').value)
@@ -376,9 +369,6 @@ async function openCreateSwapModal(offer = null) {
   document.getElementById('create-swap-modal').querySelector('h3').textContent = offer ? 'Edit Swap Offer' : 'New Swap Offer'
   document.getElementById('btn-submit-swap').textContent = offer ? 'Save Changes' : 'Post Swap Offer'
 
-  // from_coin/to_coin/the total size aren't editable — changing what's
-  // actually collateralized needs a cancel-and-repost instead — so those
-  // fields lock to the offer's current values while editing.
   fromSelect.value = offer ? String(offer.from_coin).toUpperCase() : fromSelect.value
   fromSelect.disabled = !!offer
   toSelect.value = offer ? String(offer.to_coin).toUpperCase() : 'USDC'
@@ -392,9 +382,7 @@ async function openCreateSwapModal(offer = null) {
   modal.classList.remove('hidden')
 
   await loadPrices()
-  // Default to USD when we have a price to convert with — raw BTC/ETH
-  // amounts (e.g. 0.00015) are hard to type/reason about, same call as the
-  // wallet Send modal.
+
   const price = currentFromPrice()
   swapAmountUnit = price ? 'usd' : 'coin'
   const toDisplay = (coinAmount) => (swapAmountUnit === 'usd' && price ? (coinAmount * price).toFixed(2) : formatCoinAmount(coinAmount))
@@ -416,9 +404,7 @@ async function openCreateSwapModal(offer = null) {
     if (!Number.isFinite(min_amount) || min_amount <= 0) { errEl.textContent = 'Enter a valid minimum amount.'; return }
     if (!editingOfferId && (!Number.isFinite(max_amount) || max_amount <= 0)) { errEl.textContent = 'Enter a valid maximum amount.'; return }
     if (!editingOfferId && min_amount > max_amount) { errEl.textContent = 'Minimum cannot be greater than maximum.'; return }
-    // A generous tolerance here — converting through a USD display value and
-    // back can lose a little precision (rounded to cents), so a min that
-    // wasn't actually changed shouldn't get rejected as "too big" by a hair.
+
     if (editingOfferId && min_amount > Number(offer.remaining_amount) + 1e-6) { errEl.textContent = 'Minimum cannot exceed what remains on this offer.'; return }
     if (!Number.isFinite(profit_pct)) { errEl.textContent = 'Enter a profit/loss rate (0 for an even swap).'; return }
 

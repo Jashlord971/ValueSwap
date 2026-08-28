@@ -34,12 +34,6 @@ pub struct AuthUser {
     pub ip: Option<String>,
 }
 
-/// The real client IP, preferring a proxy-set forwarding header (this app
-/// may run behind a reverse proxy / load balancer in production) and
-/// falling back to the raw TCP peer address for direct connections (e.g.
-/// local dev). Headers are attacker-controllable on direct connections, but
-/// this is only ever used for informational "detected location" display on
-/// the user's own account, never for security decisions.
 fn client_ip_from_req(req: &Request) -> Option<String> {
     let headers = req.headers();
     for header_name in ["cf-connecting-ip", "x-real-ip"] {

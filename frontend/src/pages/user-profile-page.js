@@ -1,4 +1,4 @@
-// user-profile-page.js — entry point for user.html (/user/:username)
+
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig } from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'

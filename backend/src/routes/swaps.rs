@@ -41,8 +41,6 @@ async fn list_swap_offers(ctx: Ctx, Query(query): Query<ListSwapsQuery>) -> Resu
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let mine = query.mine.unwrap_or(false);
 
-    // Same shared-fetch cache pattern as offers.rs's list_offers — the raw
-    // collection is identical for every caller.
     let mut offers: Vec<SwapOffer> = if let Some(cached) = ctx.state.ttl_cache.get::<Vec<SwapOffer>>(SWAP_OFFERS_CACHE_KEY).await {
         cached
     } else {
@@ -68,7 +66,7 @@ async fn list_swap_offers(ctx: Ctx, Query(query): Query<ListSwapsQuery>) -> Resu
             if mine {
                 o.creator_uid == ctx.user.uid || o.last_taker_uid.as_deref() == Some(ctx.user.uid.as_str())
             } else {
-                // The board only shows what's actually takeable right now.
+
                 o.status == SwapOfferStatus::Open && o.creator_uid != ctx.user.uid
             }
         })
@@ -84,7 +82,7 @@ fn apply_effective_swap_status(offer: &mut SwapOffer) -> bool {
         offer.status = SwapOfferStatus::Filled;
         return true;
     }
-    false                             
+    false
 }
 
 async fn create_swap_offer(ctx: Ctx, Json(req): Json<CreateSwapOfferRequest>) -> Result<Json<SwapOffer>, AppError> {
@@ -204,7 +202,6 @@ async fn accept_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Acc
     let maker_to_bal_path = format!("balances/{}/{}", maker_uid, offer.to_coin);
     let maker_to_bal = read_f64_path(&db, &maker_to_bal_path).await?;
 
-    // from_coin != to_coin is enforced at creation, so these are always distinct paths.
     let from_fee_path = format!("platform_fees/{}", offer.from_coin);
     let from_fee_bal = read_f64_path(&db, &from_fee_path).await?;
     let to_fee_path = format!("platform_fees/{}", offer.to_coin);
@@ -297,12 +294,6 @@ async fn toggle_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Upd
     Ok(Json(offer))
 }
 
-/// Edits the rate and per-fill minimum on an offer that hasn't been cancelled
-/// or fully filled. from_coin/to_coin/max_amount aren't editable — changing
-/// what's actually collateralized would mean unlocking/relocking escrow, so
-/// that's a cancel-and-repost instead. Changing profit_pct re-quotes to_amount
-/// against today's prices and rebases max_amount to whatever's currently
-/// remaining, so the offer's rate (to_amount / max_amount) stays meaningful.
 async fn update_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateSwapOfferRequest>) -> Result<Json<SwapOffer>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let val = db
@@ -318,8 +309,7 @@ async fn update_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Upd
     if !matches!(offer.status, SwapOfferStatus::Open | SwapOfferStatus::Paused) {
         return Err(AppError::BadRequest("Only an open or paused offer can be edited".into()));
     }
-    // Rebasing max_amount onto a near-zero remaining_amount (see below) would
-    // produce a degenerate offer priced on dust. Cancel-and-repost instead.
+
     if offer.remaining_amount <= 1e-8 {
         return Err(AppError::BadRequest("This offer is essentially filled and can't be edited — cancel it instead".into()));
     }

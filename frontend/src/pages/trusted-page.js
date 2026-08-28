@@ -11,6 +11,14 @@ import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance
 const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
 
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 let currentProfile = null
 let currentUser    = null
 
@@ -67,7 +75,7 @@ async function renderTrustedList() {
     <div class="user-list-item">
       <img src="${avatarPathFromNumber(p.avatar_number)}" alt="" class="user-list-avatar-img"
            onerror="this.src='/avatars/1.png'" />
-      <span class="user-list-name">@${p.username}</span>
+      <span class="user-list-name">@${escHtml(p.username)}</span>
       <span class="user-list-tag tag-trusted">Trusted</span>
       <button class="btn-sm" data-untrust="${p.uid}">Remove</button>
     </div>

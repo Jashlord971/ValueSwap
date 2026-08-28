@@ -2084,9 +2084,6 @@ button:disabled, .btn:disabled, .btn-sm:disabled { opacity: 0.45; cursor: not-al
   font-weight: 600;
 }
 
-/* Swap offer cards have more going on (a range, a rate, a live take-amount
-   input + preview + button) than the 3-column P2P grid was built for, so they
-   get their own stacked layout instead of squeezing into .p2p-offer-body. */
 .swap-offer-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -1,19 +1,3 @@
-// Sweeps deposits from individual user addresses into platform-controlled
-// treasury addresses, and pays queued external withdrawals out of that
-// treasury instead of signing live off whatever a user's own deposit
-// address happens to hold.
-//
-// Why: the old model signed a withdrawal directly from the requesting
-// user's own on-chain deposit address. That only works if the user's
-// ledger balance matches what's physically sitting at that one address —
-// which stops being true the moment they receive money via an internal
-// transfer or a trade payout (both pure ledger moves, no on-chain
-// transaction happens). This makes the treasury the single source of
-// on-chain funds for every withdrawal instead, which is how real
-// custodial exchanges do it. The tradeoff, by design: withdrawals are no
-// longer signed synchronously on request — they're queued, and a
-// background worker pays them out once the treasury actually has the
-// funds (from a prior sweep).
 
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
@@ -52,10 +36,6 @@ fn treasury_eth_address(state: &AppState) -> Result<String, AppError> {
     derive_eth_address_indexed(&state.master_seed, TREASURY_INDEX).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-/// Background job: walk every user with a wallet and sweep whatever's
-/// sitting at their deposit addresses into the treasury. Safe to run
-/// repeatedly — a BTC address with nothing above the sweep threshold, or
-/// an ETH/ERC20 balance below its threshold, is just skipped.
 pub async fn sweep_all_deposits(state: Arc<AppState>) {
     let admin_db = RtdbClient::new_admin(&state);
     let Ok(Some(serde_json::Value::Object(wallets))) = admin_db.get("wallet_indices").await else {
@@ -107,10 +87,13 @@ async fn sweep_user_eth_family(state: &AppState, uid: &str, index: u32, treasury
     let needs_token_sweep = usdt_bal >= TOKEN_MIN_SWEEP || usdc_bal >= TOKEN_MIN_SWEEP;
 
     if needs_token_sweep && eth_bal < ETH_GAS_RESERVE {
-        // Not enough gas at this address to move a token out. Top it up
-        // from the treasury now; the actual token sweep happens next cycle
-        // once that lands (ERC20 transfers need the user's own address to
-        // pay gas — the platform can't sponsor it in the same tx).
+
+        if crate::rate_limit::check_rate_limit(
+            state, &format!("gas-topup:{uid}"), 1, 24 * 3600, "receiving gas top-ups",
+        ).await.is_err() {
+            return Ok(());
+        }
+
         let tx = broadcast_eth(state, &state.master_seed, TREASURY_INDEX, &addr, ETH_TOPUP_AMOUNT, None).await?;
         tracing::info!("sweep: gas top-up uid={uid} tx={tx}");
         return Ok(());
@@ -125,9 +108,6 @@ async fn sweep_user_eth_family(state: &AppState, uid: &str, index: u32, treasury
         tracing::info!("sweep: USDC uid={uid} amount={usdc_bal} tx={tx}");
     }
 
-    // eth_bal above was read before any token sweeps just now spent gas —
-    // only sweep the native-ETH surplus on a cycle where we didn't also
-    // spend some of it, so we're never sweeping a stale balance.
     if !needs_token_sweep && eth_bal > ETH_GAS_RESERVE + ETH_MIN_SWEEP {
         let sweep_amount = eth_bal - ETH_GAS_RESERVE;
         let tx = broadcast_eth(state, &state.master_seed, index, treasury_addr, sweep_amount, None).await?;
@@ -137,11 +117,6 @@ async fn sweep_user_eth_family(state: &AppState, uid: &str, index: u32, treasury
     Ok(())
 }
 
-/// Background job: pay out queued withdrawals from the treasury, oldest
-/// first, whenever it has enough of the relevant coin. Requests that
-/// genuinely fail to broadcast (not just "treasury doesn't have enough
-/// yet") get a few retries, then are marked Failed and their reserved
-/// ledger balance is refunded rather than left stuck forever.
 pub async fn process_withdrawal_queue(state: Arc<AppState>) {
     let admin_db = RtdbClient::new_admin(&state);
     let Ok(docs) = admin_db.get_collection("withdrawal_requests").await else { return };

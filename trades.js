@@ -3,8 +3,8 @@ import { cacheGet } from './cache.js'
 
 let currentUser = null
 let editingOfferId = null
-let paymentMethods = []   // [{id, name, method_type, allowed_currencies, escrow_fee_pct}]
-let allCurrencies  = []   // [{code, name}]
+let paymentMethods = []
+let allCurrencies  = []
 
 export function initTrades(user) {
   currentUser = user
@@ -17,19 +17,9 @@ export function initTrades(user) {
 async function loadMeta() {
   try {
     [paymentMethods, allCurrencies] = await Promise.all([listPaymentMethods(), listCurrencies()])
-  } catch { /* use empty arrays â€” form will show no suggestions */ }
+  } catch {  }
 }
 
-// â”€â”€ Searchable combo-box helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-/**
- * Wires a searchable dropdown onto:
- *   searchInput  â€” visible text input
- *   hiddenInput  â€” stores the selected value
- *   dropdown     â€” <ul> element to populate
- * getItems(query) â†’ [{value, label, secondary?}]
- * onSelect(item) â€” called when user picks an item
- */
 function bindSearchable(searchInput, hiddenInput, dropdown, getItems, onSelect) {
   let suppressBlur = false
 
@@ -61,7 +51,7 @@ function bindSearchable(searchInput, hiddenInput, dropdown, getItems, onSelect) 
     if (suppressBlur) return
     setTimeout(() => dropdown.classList.add('hidden'), 150)
   })
-  // Clear hidden value if user empties text
+
   searchInput.addEventListener('input', () => {
     if (!searchInput.value.trim()) { hiddenInput.value = ''; onSelect(null) }
   })
@@ -92,8 +82,6 @@ function currencyItems(query, allowedCodes) {
     .map(c => ({ value: c.code, label: `${c.code} â€” ${c.name}` }))
 }
 
-// â”€â”€ Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 function bindModal() {
   const modal    = document.getElementById('offer-modal')
   const btnNew   = document.getElementById('btn-new-offer')
@@ -109,14 +97,12 @@ function bindModal() {
   })
   document.getElementById('btn-submit-offer').addEventListener('click', handleSubmit)
 
-  // Wire delete confirm modal
   document.getElementById('close-delete-modal').addEventListener('click', closeDeleteModal)
   document.getElementById('btn-delete-cancel').addEventListener('click', closeDeleteModal)
   document.getElementById('delete-modal').addEventListener('click', e => {
     if (e.target === document.getElementById('delete-modal')) closeDeleteModal()
   })
 
-  // Wire payment method picker â€” when PM selected, filter currencies
   bindSearchable(
     document.getElementById('offer-card-search'),
     document.getElementById('offer-card'),
@@ -133,14 +119,14 @@ function bindModal() {
           document.getElementById('offer-currency').value = code
           document.getElementById('offer-currency-search').value = cur ? `${cur.code} â€” ${cur.name}` : code
         } else {
-          // Clear currency when PM changes
+
           document.getElementById('offer-currency').value = ''
           document.getElementById('offer-currency-search').value = ''
         }
         if (currencyRow) currencyRow.style.display = ''
         showEscrowInfo(pm)
       } else {
-        // PM cleared â€” hide currency again
+
         document.getElementById('offer-currency').value = ''
         document.getElementById('offer-currency-search').value = ''
         if (currencyRow) currencyRow.style.display = 'none'
@@ -148,7 +134,6 @@ function bindModal() {
     }
   )
 
-  // Wire currency picker (constraints applied dynamically)
   bindSearchable(
     document.getElementById('offer-currency-search'),
     document.getElementById('offer-currency'),
@@ -163,14 +148,14 @@ function bindModal() {
 }
 
 function updateCurrencyConstraint(pmId) {
-  // Re-render with new constraints when PM changes
+
   const pm = paymentMethods.find(p => p.id === pmId)
   const search = document.getElementById('offer-currency-search')
   if (search) {
-    // Trigger re-filter
+
     search.dispatchEvent(new Event('input'))
   }
-  _ = pm // suppress lint
+  _ = pm
 }
 
 function showEscrowInfo(pm) {
@@ -208,13 +193,11 @@ function openEditModal(offer) {
   const radio = document.querySelector(`input[name="offer-type"][value="${offer.offer_type}"]`)
   if (radio) radio.checked = true
 
-  // Restore payment method â€” match by id first, fall back to name for old offers
   const pm = paymentMethods.find(p => p.id === offer.card)
           || paymentMethods.find(p => p.name.toLowerCase() === offer.card.toLowerCase())
   document.getElementById('offer-card').value        = pm ? pm.id : offer.card
   document.getElementById('offer-card-search').value = pm ? pm.name : offer.card
 
-  // Restore currency
   const currencyFieldRowEdit = document.getElementById('currency-field-row')
   if (currencyFieldRowEdit) currencyFieldRowEdit.style.display = ''
   const cur = allCurrencies.find(c => c.code === offer.currency)
@@ -268,8 +251,6 @@ async function handleSubmit() {
   }
 }
 
-// â”€â”€ Delete confirmation modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 let pendingDeleteId = null
 
 function confirmDelete(offerId) {
@@ -296,8 +277,6 @@ function closeDeleteModal() {
   document.getElementById('delete-modal').classList.add('hidden')
 }
 
-// â”€â”€ Toast notification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 function showToast(message, type = 'info') {
   let container = document.getElementById('toast-container')
   if (!container) {
@@ -316,12 +295,9 @@ function showToast(message, type = 'info') {
   }, 3500)
 }
 
-// â”€â”€ My Offers list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 async function loadMyOffers() {
   const list = document.getElementById('offers-list')
 
-  // Render from cache instantly if available
   const cached = cacheGet('offers')
   if (cached) {
     renderOfferList(list, cached.filter(o => o.creator_uid === currentUser?.uid))
@@ -358,7 +334,6 @@ function renderOfferList(list, mine) {
       ${mine.map(renderOfferRow).join('')}
     </div>`
 
-  // close any open dropdown when clicking outside
   document.addEventListener('click', e => {
     if (!e.target.closest('.offer-menu')) {
       document.querySelectorAll('.offer-menu-dropdown').forEach(d => d.classList.add('hidden'))
@@ -397,7 +372,6 @@ function renderOfferList(list, mine) {
   })
 }
 
-// Escape user content before inserting into innerHTML
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

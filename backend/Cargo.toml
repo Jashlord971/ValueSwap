@@ -8,22 +8,18 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
-# Web framework
+
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
-# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP client (for Firebase REST API + Google Vision)
 reqwest = { version = "0.12", features = ["json"] }
 
-# Firebase JWT verification
 jsonwebtoken = "9"
 
-# Utilities
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -34,29 +30,25 @@ hex = "0.4"
 regex = "1"
 urlencoding = "2"
 
-# Wallet: BIP39 mnemonic generation
 bip39 = "2.0"
 rand = "0.8"
 
-# Wallet: HD key derivation (BIP32/BIP44 path)
 tiny-hderive = "0.3"
 
-# Wallet: ETH — secp256k1 key + Keccak-256 address hashing
 secp256k1 = { version = "0.28", features = ["rand-std", "global-context"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 
-# Wallet: BTC address generation
 bitcoin = { version = "0.31", features = ["rand-std"] }
 
-# Card number hashing (SHA-256 — never store raw card numbers)
 sha2 = "0.10"
 
-# TRON address encoding
 bs58 = "0.5"
 
-# Withdrawal: AES-256-GCM mnemonic encryption
 aes-gcm = "0.10"
 
-# Withdrawal: Ethereum EIP-155 RLP transaction encoding
 rlp = "0.5"
 totp-rs = { version = "5", features = ["qr", "gen_secret"] }
+
+[target.'cfg(unix)'.dependencies]
+
+libc = "0.2"

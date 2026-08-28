@@ -1,4 +1,4 @@
-// list-buckets.js — lists Firebase Storage buckets and sets CORS
+
 const https = require('https')
 const crypto = require('crypto')
 const fs = require('fs')
@@ -68,7 +68,6 @@ async function main() {
   const token = await getToken()
   console.log('Token obtained.')
 
-  // First list all buckets to find the correct name
   console.log('\nListing all Firebase Storage buckets...')
   const list = await request('firebasestorage.googleapis.com', '/v1beta/projects/cardswaphub/buckets', 'GET', token)
   console.log('List status:', list.status, list.body.substring(0, 600))
@@ -76,14 +75,13 @@ async function main() {
   const bucketId = 'cardswaphub.firebasestorage.app'
   const encodedBucket = encodeURIComponent(bucketId)
 
-  // Try to GET the specific bucket via Firebase Storage Management API
   console.log('\nGetting bucket via Firebase Storage Management API...')
   const getBucket = await request('firebasestorage.googleapis.com', `/v1beta/projects/cardswaphub/buckets/${encodedBucket}`, 'GET', token)
   console.log('GET status:', getBucket.status)
   console.log(getBucket.body.substring(0, 400))
 
   if (getBucket.status === 200) {
-    // PATCH CORS via Firebase Storage Management API
+
     const corsBody = JSON.stringify({
       cors: [{
         origin: ['http://localhost:5173', 'http://localhost:5174', 'https://cardswaphub.web.app', 'https://cardswaphub.firebaseapp.com'],
@@ -97,7 +95,7 @@ async function main() {
     console.log('PATCH status:', patch.status)
     console.log(patch.body)
   } else {
-    // Fallback: try GCS JSON API
+
     console.log('\nTrying GCS JSON API fallback...')
     const corsBody = JSON.stringify({
       cors: [{

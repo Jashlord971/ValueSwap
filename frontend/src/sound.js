@@ -1,6 +1,3 @@
-// sound.js — shared "toy" notification chime used across chat + popups.
-// Browsers block audio until the user has interacted with the page at least
-// once, so failures here are expected/harmless and always swallowed.
 
 let audio = null
 let unlocked = false
@@ -19,12 +16,10 @@ export function playNotifySound() {
     el.currentTime = 0
     void el.play().then(() => { unlocked = true }).catch(() => {})
   } catch {
-    // ignore — autoplay restrictions or unsupported environment
+
   }
 }
 
-// Call once on first user gesture (click/keydown) to "warm up" playback so
-// the very first real notification isn't swallowed by autoplay restrictions.
 export function primeNotifySound() {
   if (unlocked) return
   const handler = () => {

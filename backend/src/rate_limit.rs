@@ -2,11 +2,6 @@ use crate::error::AppError;
 use crate::AppState;
 use std::collections::VecDeque;
 
-/// Generic in-memory sliding-window rate limiter: at most `max_count` calls
-/// under this `key` within `window_secs`. Callers compose their own key
-/// (e.g. `format!("offer-create:{}", uid)`) so unrelated actions never
-/// share a bucket. `what` is a short gerund phrase used in the error
-/// message ("creating offers", "editing offers").
 pub async fn check_rate_limit(
     state: &AppState,
     key: &str,

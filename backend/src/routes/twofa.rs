@@ -43,14 +43,6 @@ fn account_label(user: &crate::auth::AuthUser) -> String {
 const MAX_TOTP_ATTEMPTS: u32 = 3;
 const TOTP_LOCKOUT_SECS: u64 = 60;
 
-/// Checks a submitted code against a TOTP secret, with a short server-side
-/// lockout after repeated wrong guesses. A 6-digit code only has 1,000,000
-/// possible values and a fresh one is valid for ~90s either side of "now" —
-/// without this, nothing stops a script from grinding through guesses (the
-/// natural 30s rotation slows down a human, not an automated attacker). The
-/// lockout is temporary rather than a permanent lock, since a mistyped or
-/// just-expired code from a legitimate user is the common case, not an
-/// attack — it should cost a short wait, not a support ticket.
 async fn verify_totp_with_rate_limit(state: &AppState, uid: &str, totp: &TOTP, code: &str) -> Result<(), AppError> {
     let now = unix_now();
 
@@ -123,8 +115,6 @@ async fn setup_2fa(ctx: Ctx) -> Result<Json<SetupResponse>, AppError> {
         .get_qr_base64()
         .map_err(|e| AppError::Internal(format!("QR generation failed: {e}")))?;
 
-    // Stored as "pending" until confirm_2fa verifies the user actually
-    // scanned it and can generate a valid code — never marked active here.
     let enc = encrypt_secret(&secret_b32, &ctx.state.mnemonic_key)?;
     db.set(
         &format!("totp_pending/{}", ctx.user.uid),
@@ -195,8 +185,7 @@ async fn disable_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<User
 
     profile.totp_enabled = false;
     profile.totp_secret_enc = None;
-    // The settings that depend on a working code no longer have one to check —
-    // turn them off rather than silently leaving them pointed at nothing.
+
     profile.require_release_code = false;
     profile.withdraw_code_required = false;
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
@@ -209,11 +198,6 @@ struct VerifyLoginResponse {
     ok: bool,
 }
 
-/// Called right after Firebase sign-in, before the dashboard renders, when
-/// the profile says totp_enabled. Purely a UX gate for the login flow —
-/// the actions that actually move money (release escrow, off-chain sends)
-/// re-check the code themselves at the point of the request, so this
-/// endpoint isn't the only thing standing between an attacker and funds.
 async fn verify_login_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<VerifyLoginResponse>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let profile = load_profile(&db, &ctx.user.uid).await?;
@@ -232,9 +216,6 @@ async fn verify_login_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json
     Ok(Json(VerifyLoginResponse { ok: true }))
 }
 
-/// Shared by trades.rs / wallet.rs / withdrawal.rs: given a profile that
-/// requires a code for some action, validate the caller supplied a correct
-/// current TOTP code for it. Returns Ok(()) if the action isn't gated.
 pub async fn require_valid_totp_if_gated(
     state: &AppState,
     email: Option<&str>,

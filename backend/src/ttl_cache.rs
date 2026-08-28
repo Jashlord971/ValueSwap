@@ -1,11 +1,6 @@
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
-/// Generic in-memory TTL cache: get/set by string key, values are anything
-/// (de)serializable. One shared instance lives on AppState so every route
-/// module can reuse it instead of hand-rolling its own static cache the way
-/// PRICE_CACHE did. Also doubles as a cheap "have I done this recently?"
-/// throttle — set a trivial marker value and check for its presence.
 pub struct TtlCache {
     entries: Mutex<HashMap<String, (u64, serde_json::Value)>>,
 }

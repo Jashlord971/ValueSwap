@@ -689,6 +689,7 @@ dependencies = [
  "dotenvy",
  "hex",
  "jsonwebtoken",
+ "libc",
  "rand 0.8.6",
  "regex",
  "reqwest",

@@ -568,11 +568,6 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
     let is_market = query.market.unwrap_or(false);
     let db = RtdbClient::new(&state, &user.id_token);
 
-    // The raw collection is the same for every caller (market browsing and
-    // "my offers" both start from it) — cache the fetch itself rather than
-    // per-user, so a busy market page benefits everyone, not just repeat
-    // requests from the same user. Short TTL since market mode below can
-    // write back auto-adjusted offers and we don't want that lagging long.
     const OFFERS_CACHE_KEY: &str = "offers-collection";
     let mut offers: Vec<Offer> = if let Some(cached) = state.ttl_cache.get::<Vec<Offer>>(OFFERS_CACHE_KEY).await {
         cached

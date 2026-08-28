@@ -657,11 +657,6 @@ function renderTradeEventCard() {
       </div>`
   }
 
-  // Dispute-raised and dispute-resolved notices are posted as real, timestamped
-  // system chat messages (see insert_dispute_notice / insert_dispute_resolved_notice
-  // on the backend) so they sort correctly among later messages instead of being
-  // pinned here at the end regardless of when they actually happened.
-
   return ''
 }
 

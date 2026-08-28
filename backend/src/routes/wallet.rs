@@ -132,7 +132,8 @@ async fn init_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
         return Ok(Json(wallet));
     }
 
-    let index = wallet_index_for_uid(&ctx.user.uid);
+    let admin_db = RtdbClient::new_admin(&ctx.state);
+    let index = allocate_wallet_index(&admin_db, &ctx.user.uid).await?;
 
     let seed = &ctx.state.master_seed;
     let wallet = WalletInfo {
@@ -149,11 +150,30 @@ async fn init_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
     Ok(Json(wallet))
 }
 
-pub(crate) fn wallet_index_for_uid(uid: &str) -> u32 {
+async fn allocate_wallet_index(admin_db: &RtdbClient<'_>, uid: &str) -> Result<u32, AppError> {
+    let taken: std::collections::HashSet<u64> = match admin_db.get("wallet_indices").await? {
+        Some(serde_json::Value::Object(map)) => map.values().filter_map(|v| v.as_u64()).collect(),
+        _ => Default::default(),
+    };
+
+    for attempt in 0u32..64 {
+        let candidate = hashed_wallet_index(uid, attempt);
+        if candidate != TREASURY_INDEX && !taken.contains(&(candidate as u64)) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::Internal("Could not allocate a unique wallet index — this should be practically impossible".into()))
+}
+
+fn hashed_wallet_index(uid: &str, attempt: u32) -> u32 {
     let mut hasher = Sha256::new();
     hasher.update(uid.as_bytes());
+    if attempt > 0 {
+        hasher.update(attempt.to_be_bytes());
+    }
     let digest = hasher.finalize();
-    u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
+    u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) & 0x7FFF_FFFF
 }
 
 async fn get_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
@@ -164,12 +184,6 @@ async fn get_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
 async fn get_ledger(ctx: Ctx) -> Result<Json<LedgerBalance>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
 
-    // apply_onchain_deposits fires 7 parallel external RPC/explorer calls —
-    // expensive and, more importantly, hitting third-party rate limits.
-    // Passive balance checks (this endpoint gets polled every 45s per open
-    // wallet tab) don't need to redo that on every call; skip it if we
-    // already checked recently. claim_deposits (explicit "sync now") below
-    // bypasses this and always checks fresh.
     let onchain_check_key = format!("onchain-check:{}", ctx.user.uid);
     if ctx.state.ttl_cache.get::<bool>(&onchain_check_key).await.is_none() {
         apply_onchain_deposits(&ctx.state, &db, &ctx.user.uid).await?;
@@ -310,17 +324,6 @@ async fn sweep_platform_fees(ctx: Ctx, Json(req): Json<SweepFeesRequest>) -> Res
     })))
 }
 
-/// Deterministic index for the platform treasury's addresses — same
-/// derivation scheme as user wallets (wallet_index_for_uid), just a fixed
-/// reserved index instead of one hashed from a uid. Keys are re-derived
-/// from the master seed on demand wherever they're needed (sweeping,
-/// paying out queued withdrawals) and are NEVER written anywhere — not to
-/// RTDB, not to logs. This used to write the raw private keys *and the
-/// plaintext master mnemonic* to the `treasury` RTDB node, reachable by
-/// any logged-in user with no admin check — that would have handed out
-/// the key to every user's wallet on the platform, not just the
-/// treasury's. Confirmed (Aug 2026) it was never actually called in
-/// production before being caught and rewritten.
 pub const TREASURY_INDEX: u32 = 900_000;
 
 async fn get_treasury_addresses(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {

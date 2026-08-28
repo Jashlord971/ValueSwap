@@ -118,9 +118,6 @@ function showIncomingTransactionPopupModal(tx) {
   overlay.className = 'modal-overlay'
   const amount = Number.isFinite(Number(tx.amount)) ? Number(tx.amount).toFixed(8) : '—'
 
-  // A dispute resolved in your favor is an escrow release, not a fresh
-  // "payment" landing in your account — call it what it is instead of the
-  // generic trade-payout wording.
   const isDisputeWin = tx.kind === 'trade' && tx.counterparty_label === 'dispute resolution'
   const title = isDisputeWin ? 'Dispute Won' : 'Money Received'
   const bodyText = isDisputeWin
@@ -442,10 +439,6 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   function markRead(tradeId, options = {}) {
     if (!tradeId) return Promise.resolve()
 
-    // Always tell the backend this trade's chat was opened/acknowledged —
-    // it computes "read up to" from the latest partner message itself, so
-    // this is safe/idempotent even if we don't have a local timestamp yet
-    // (e.g. right after a fresh page load, before any refresh() has run).
     const readPromise = markChatRead(tradeId).catch(() => {})
 
     const activityTs = Number(options.messageActivityTs || options.messageTs || 0)
@@ -696,9 +689,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   const onOpenChat = (e) => {
     const tradeId = e?.detail?.tradeId
     if (!tradeId) return
-    // Await the read-receipt call before refreshing so the notification
-    // panel/badge reflects the just-opened trade as read on this very
-    // refresh, instead of racing the backend and needing another poll tick.
+
     markRead(tradeId).then(() => refresh())
   }
 

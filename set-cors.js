@@ -1,7 +1,3 @@
-// set-cors.js — applies CORS config to Firebase Storage bucket using a service account key
-// Usage: node set-cors.js
-// Requires: serviceAccount.json in the same directory (download from Firebase Console →
-//   Project Settings → Service accounts → Generate new private key)
 
 const { Storage } = require('@google-cloud/storage')
 
