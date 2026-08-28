@@ -104,12 +104,13 @@ export const faucetCredit      = (coin, amount)            => request('POST', '/
 export const setDevBalanceUsd  = (coin, usdAmount)         => request('POST', '/wallet/dev/set-balance-usd', { coin, usd_amount: usdAmount })
 export const getPlatformFees   = ()                        => request('GET',  '/wallet/platform-fees')
 export const sweepPlatformFees = (coin, amount)            => request('POST', '/wallet/platform-fees/sweep', { coin, amount })
-export const initTreasury      = ()                        => request('POST', '/wallet/treasury/init')
-export const sendInternal      = (to_email, coin, amount)  => request('POST', '/wallet/send',        { to_email, coin, amount })
-export const withdraw          = (coin, to_address, amount) => request('POST', '/wallet/withdraw',     { coin, to_address, amount })
-export const smartSend         = (to, coin, amount)         => request('POST', '/wallet/smart-send',   { to, coin, amount })
+export const getTreasuryAddresses = ()                     => request('GET', '/wallet/treasury/addresses')
+export const sendInternal      = (to_email, coin, amount, totpCode)  => request('POST', '/wallet/send',        { to_email, coin, amount, totp_code: totpCode || undefined })
+export const withdraw          = (coin, to_address, amount, totpCode) => request('POST', '/wallet/withdraw',     { coin, to_address, amount, totp_code: totpCode || undefined })
+export const smartSend         = (to, coin, amount, totpCode)         => request('POST', '/wallet/smart-send',   { to, coin, amount, totp_code: totpCode || undefined })
 export const claimDeposits     = ()                          => request('POST', '/wallet/claim-deposits')
 export const listTransactions  = ()                          => request('GET', '/wallet/transactions')
+export const listWithdrawals   = ()                          => request('GET', '/wallet/withdrawals')
 
 export const upsertUser       = ()       => cached('profile', TTL.profile, async () => {
   const profile = await request('POST', '/users/me')
@@ -121,7 +122,11 @@ export const updateMyProfile  = (data)   => request('PATCH', '/users/me', data).
 export const getUserProfile   = (uid)    => request('GET', `/users/${uid}`)
 export const getUserProfileByUsername = (username) => request('GET', `/users/by-username/${encodeURIComponent(username)}`)
 export const resolveRecipient  = (identifier, coin) => request('POST', '/users/resolve', { identifier, coin })
-export const setWithdrawCode   = (code) => request('POST', '/users/me/set-withdraw-code', { code }).then(r => { cacheSet('profile', r, TTL.profile); return r })
+
+export const setup2fa       = () => request('POST', '/2fa/setup')
+export const confirm2fa     = (code) => request('POST', '/2fa/confirm', { code }).then(r => { cacheSet('profile', r, TTL.profile); return r })
+export const disable2fa     = (code) => request('POST', '/2fa/disable', { code }).then(r => { cacheSet('profile', r, TTL.profile); return r })
+export const verifyLogin2fa = (code) => request('POST', '/2fa/verify-login', { code })
 
 export const warnUser = (uid, reason, tradeId) => request('POST', `/users/${uid}/warn`, { reason, trade_id: tradeId || null })
 export const banUser  = (uid, reason)          => request('POST', `/users/${uid}/ban`, { reason })
@@ -130,7 +135,7 @@ export const listTrades  = ()       => cached('trades', TTL.trades, () => reques
 export const createTrade = (data)   => request('POST', '/trades', data).then(r    => { cacheInvalidate('trades'); return r })
 export const getTrade    = (id)     => request('GET',  `/trades/${id}`)
 export const acceptTrade = (id)     => request('POST', `/trades/${id}/accept`).then(r   => { cacheInvalidate('trades'); return r })
-export const completeTrade = (id)   => request('POST', `/trades/${id}/complete`).then(r => { cacheInvalidate('trades'); return r })
+export const completeTrade = (id, totpCode) => request('POST', `/trades/${id}/complete`, { totp_code: totpCode || undefined }).then(r => { cacheInvalidate('trades'); return r })
 export const cancelTrade   = (id, reason) => request('POST', `/trades/${id}/cancel`, reason ? { reason } : undefined).then(r => { cacheInvalidate('trades'); return r })
 export const markTradePaid = (id)    => request('POST', `/trades/${id}/mark-paid`).then(r  => { cacheInvalidate('trades'); return r })
 export const disputeTrade  = (id, reasonCategory, reasonText) =>

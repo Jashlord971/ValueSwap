@@ -3,12 +3,13 @@ use crate::firebase::RtdbClient;
 use crate::AppState;
 use axum::{
     async_trait,
-    extract::{FromRequestParts, Request, State},
+    extract::{ConnectInfo, FromRequestParts, Request, State},
     http::request::Parts,
     middleware::Next,
     response::Response,
     Extension,
 };
+use std::net::SocketAddr;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -30,6 +31,36 @@ pub struct AuthUser {
     pub uid: String,
     pub email: Option<String>,
     pub id_token: String,
+    pub ip: Option<String>,
+}
+
+/// The real client IP, preferring a proxy-set forwarding header (this app
+/// may run behind a reverse proxy / load balancer in production) and
+/// falling back to the raw TCP peer address for direct connections (e.g.
+/// local dev). Headers are attacker-controllable on direct connections, but
+/// this is only ever used for informational "detected location" display on
+/// the user's own account, never for security decisions.
+fn client_ip_from_req(req: &Request) -> Option<String> {
+    let headers = req.headers();
+    for header_name in ["cf-connecting-ip", "x-real-ip"] {
+        if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok()) {
+            let ip = v.trim();
+            if !ip.is_empty() {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = v.split(',').next() {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
 }
 
 pub struct Ctx {
@@ -65,6 +96,7 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
         .to_owned();
 
     let claims = verify_firebase_token(&state, &token).await?;
+    let ip = client_ip_from_req(&req);
 
     let admin_db = RtdbClient::new_admin(&state);
     if let Ok(Some(val)) = admin_db.get(&format!("users/{}", claims.sub)).await {
@@ -84,6 +116,7 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
         uid: claims.sub,
         email: claims.email,
         id_token: token,
+        ip,
     });
 
     Ok(next.run(req).await)

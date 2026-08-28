@@ -45,6 +45,31 @@ export function showConfirm(message) {
   })
 }
 
+export function showPromptModal(message, options = {}) {
+  const { title = 'Reason', placeholder = '', rows = 3, okLabel = 'OK', skipLabel = 'Skip' } = options
+  return new Promise(resolve => {
+    const overlay = makeOverlay('prompt-modal-overlay')
+    overlay.querySelector('.modal').innerHTML = `
+      <div class="modal-header">
+        <h2>${title}</h2>
+        <button class="btn-modal-close">✕</button>
+      </div>
+      <p style="margin-top:1rem">${message}</p>
+      <textarea class="form-input" id="prompt-modal-input" rows="${rows}" placeholder="${placeholder}" style="width:100%;resize:vertical;font-family:inherit;"></textarea>
+      <div class="confirm-modal-actions" style="margin-top:1.25rem">
+        <button class="btn-cancel" id="prompt-modal-skip">${skipLabel}</button>
+        <button class="btn" id="prompt-modal-ok">${okLabel}</button>
+      </div>
+    `
+    const input = overlay.querySelector('#prompt-modal-input')
+    input.focus()
+    const dismiss = (result) => { overlay.remove(); resolve(result) }
+    overlay.querySelector('.btn-modal-close').addEventListener('click', () => dismiss(''))
+    overlay.querySelector('#prompt-modal-skip').addEventListener('click', () => dismiss(''))
+    overlay.querySelector('#prompt-modal-ok').addEventListener('click', () => dismiss(input.value.trim()))
+  })
+}
+
 export function showFeedbackModal(options = {}) {
   return new Promise(resolve => {
     const {

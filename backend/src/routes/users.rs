@@ -5,12 +5,11 @@ use crate::models::{
     Offer, OfferStatus, ResolveRecipientRequest, ResolveRecipientResponse, Trade, TradeStatus,
     UpdateProfileRequest, UsernameEntry, UserProfile, Warning,
 };
-use crate::moderation::is_moderator_email;
+use crate::moderation::is_moderator_email_cached;
 use crate::presence::HEARTBEAT_MIN_INTERVAL_SECS;
 use crate::AppState;
 use axum::{extract::Path, routing::post, Json, Router};
 use rand::Rng;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 static ADJECTIVES: &[&str] = &[
@@ -37,7 +36,6 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/me", post(upsert_me).get(get_me).patch(update_me))
         .route("/me/ping-active", post(ping_active))
-        .route("/me/set-withdraw-code", post(set_withdraw_code))
         .route("/resolve", post(resolve_recipient))
         .route("/by-username/:username", axum::routing::get(get_user_public_by_username))
         .route("/:uid/warn", post(warn_user))
@@ -108,7 +106,7 @@ async fn get_user_public(ctx: Ctx, Path(uid): Path<String>) -> Result<Json<Publi
 const WARNING_EXPIRY_SECS: u64 = 14 * 24 * 3600;
 const BAN_WARNING_THRESHOLD: usize = 3;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct PublicFeedbackEntry {
     positive: bool,
     comment: String,
@@ -116,7 +114,7 @@ struct PublicFeedbackEntry {
     from_uid: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct PublicUserProfileFull {
     uid: String,
     username: String,
@@ -130,19 +128,31 @@ struct PublicUserProfileFull {
     active_offers: Vec<Offer>,
 }
 
-/// Public-facing profile page data, looked up by username (the /user/:username
-/// route) rather than uid — trade count and feedback are computed live from
-/// the trades collection instead of the profile's own (unmaintained) counters.
 async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> Result<Json<PublicUserProfileFull>, AppError> {
     let lower = username.trim().trim_start_matches('@').to_lowercase();
     if lower.is_empty() {
         return Err(AppError::BadRequest("Username cannot be empty".into()));
     }
 
+    // Stopgap until this reads from a per-user index instead of scanning
+    // the entire trades+offers collections on every profile view (see the
+    // comment on PublicUserProfileFull's construction below) — without
+    // this, repeatedly hitting a profile page is a cheap way to force a
+    // full collection scan on every request.
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("profile-view:{}", ctx.user.uid), 30, 60, "viewing profiles",
+    ).await?;
+
+    let cache_key = format!("public-profile:{}", lower);
+    if let Some(cached) = ctx.state.ttl_cache.get::<PublicUserProfileFull>(&cache_key).await {
+        return Ok(Json(cached));
+    }
+
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let entry_val = db.get(&format!("usernames/{}", lower)).await?
         .ok_or_else(|| AppError::NotFound(format!("User '{}' not found", username)))?;
-    let entry: UsernameEntry = serde_json::from_value(entry_val).map_err(|e| AppError::Internal(e.to_string()))?;
+    let entry = UsernameEntry::from_value(&entry_val, &username)
+        .ok_or_else(|| AppError::Internal(format!("Corrupt username index entry for '{}'", username)))?;
 
     let admin_db = RtdbClient::new_admin(&ctx.state);
     let profile_val = admin_db.get(&format!("users/{}", entry.uid)).await?
@@ -151,6 +161,13 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
 
     let now = unix_now();
 
+    // TODO(perf): this scans every trade and every offer on the platform
+    // for a single profile view. The real fix is a per-user secondary
+    // index (e.g. user_trades/{uid} maintained on trade create/complete)
+    // or switching to indexed RTDB queries (orderByChild("creator_uid")/
+    // ("offer_owner_uid")) — the latter needs .indexOn configured on the
+    // live database rules first, which isn't visible from this repo, so
+    // it's not safe to switch blind. Rate-limited above in the meantime.
     let trades: Vec<Trade> = admin_db.get_collection("trades").await?
         .into_iter()
         .filter_map(|v| serde_json::from_value::<Trade>(v).ok())
@@ -188,7 +205,7 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
         .filter(|w| w.expires_at > now)
         .count() as u64;
 
-    Ok(Json(PublicUserProfileFull {
+    let result = PublicUserProfileFull {
         uid: profile.uid,
         username: profile.username,
         avatar_number: profile.avatar_number,
@@ -199,7 +216,9 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
         active_warning_count,
         recent_feedback: feedback_entries,
         active_offers,
-    }))
+    };
+    ctx.state.ttl_cache.set(&cache_key, &result, 45).await;
+    Ok(Json(result))
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -210,13 +229,17 @@ struct WarnUserRequest {
     trade_id: Option<String>,
 }
 
-/// Issues a warning against `uid`, expiring in 2 weeks. If this pushes their
-/// active (non-expired) warning count to 3 or more, they're auto-banned.
 async fn warn_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<WarnUserRequest>) -> Result<Json<serde_json::Value>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+    if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
+
+    // Shared with ban_user — a compromised or careless moderator account
+    // shouldn't be able to fire off a burst of warnings/bans.
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("moderator-action:{}", ctx.user.uid), 20, 3600, "issuing warnings/bans",
+    ).await?;
 
     let reason = req.reason.trim();
     if reason.chars().count() > 500 {
@@ -275,13 +298,15 @@ struct BanUserRequest {
     reason: String,
 }
 
-/// Direct moderator ban — independent of the warning-count auto-ban, so a
-/// severe case doesn't need 3 prior warnings first.
 async fn ban_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<BanUserRequest>) -> Result<Json<UserProfile>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+    if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
+
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("moderator-action:{}", ctx.user.uid), 20, 3600, "issuing warnings/bans",
+    ).await?;
 
     let reason = req.reason.trim();
     if reason.chars().count() > 500 {
@@ -299,7 +324,7 @@ async fn ban_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<BanUserRequ
     profile.banned_by_uid = Some(ctx.user.uid.clone());
     admin_db.set(&format!("users/{}", uid), &serde_json::to_value(&profile).unwrap()).await?;
 
-    Ok(Json(profile))
+    Ok(Json(profile.redacted()))
 }
 
 async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
@@ -329,17 +354,23 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
             should_save = true;
         }
 
+        let ip_before = profile.last_ip.clone();
+        update_detected_location(&mut profile, user.ip.as_deref(), state).await;
+        if profile.last_ip != ip_before {
+            should_save = true;
+        }
+
         if should_save {
             db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
         }
-        return Ok(Json(profile));
+        return Ok(Json(profile.redacted()));
     }
 
     let username = generate_username();
     let entry = UsernameEntry { uid: user.uid.clone(), display: username.clone() };
     db.set(&format!("usernames/{}", username.to_lowercase()), &serde_json::to_value(&entry).unwrap()).await?;
 
-    let profile = UserProfile {
+    let mut profile = UserProfile {
         uid: user.uid.clone(),
         email: user.email.clone(),
         username,
@@ -350,7 +381,8 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
         avatar_number: random_avatar_number(),
         require_release_code: false,
         withdraw_code_required: false,
-        withdraw_code_hash: None,
+        totp_enabled: false,
+        totp_secret_enc: None,
         blocked_users: vec![],
         trusted_users: vec![],
         created_at: unix_now(),
@@ -362,10 +394,58 @@ async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
         ban_reason: None,
         banned_at: None,
         banned_by_uid: None,
+        last_ip: None,
+        detected_country: None,
+        location_updated_at: None,
     };
 
+    update_detected_location(&mut profile, user.ip.as_deref(), state).await;
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
-    Ok(Json(profile))
+    Ok(Json(profile.redacted()))
+}
+
+/// Refreshes `last_ip`/`detected_country` when the caller's IP has changed
+/// since the last time we saw them. Skipped entirely when the IP is
+/// unchanged, so this only ever does the geolocation lookup once per new
+/// IP rather than on every request.
+async fn update_detected_location(profile: &mut UserProfile, ip: Option<&str>, state: &AppState) {
+    let Some(ip) = ip else { return };
+    if profile.last_ip.as_deref() == Some(ip) {
+        return;
+    }
+    profile.last_ip = Some(ip.to_string());
+    profile.detected_country = geolocate_country(&state.http_client, ip).await;
+    profile.location_updated_at = Some(unix_now());
+}
+
+/// Looks up the country for a public IP via a free geolocation API. Private/
+/// loopback addresses (localhost, LAN, dev environments) are skipped since
+/// they can't be geolocated and would otherwise return a bogus result.
+async fn geolocate_country(http_client: &reqwest::Client, ip: &str) -> Option<String> {
+    let parsed: std::net::IpAddr = ip.parse().ok()?;
+    let is_routable = match parsed {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified())
+        }
+        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified()),
+    };
+    if !is_routable {
+        return None;
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GeoResponse {
+        status: String,
+        country: Option<String>,
+    }
+
+    let url = format!("http://ip-api.com/json/{}?fields=status,country", ip);
+    let resp = http_client.get(&url).send().await.ok()?;
+    let body: GeoResponse = resp.json().await.ok()?;
+    if body.status != "success" {
+        return None;
+    }
+    body.country
 }
 
 async fn get_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
@@ -375,7 +455,7 @@ async fn get_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
         .await?
         .ok_or_else(|| AppError::NotFound("Profile not initialised — call POST /users/me first".into()))?;
     let profile: UserProfile = serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(profile))
+    Ok(Json(profile.redacted()))
 }
 
 async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Json<UserProfile>, AppError> {
@@ -398,7 +478,7 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
 
         let existing = db.get(&format!("usernames/{}", new_lower)).await?;
         if let Some(v) = existing {
-            let taken_uid = serde_json::from_value::<UsernameEntry>(v)
+            let taken_uid = UsernameEntry::from_value(&v, &new_username)
                 .map(|e| e.uid)
                 .unwrap_or_default();
             if taken_uid != user.uid {
@@ -445,9 +525,28 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
         profile.avatar_number = v;
     }
     if let Some(v) = req.require_release_code {
+        if v && !profile.totp_enabled {
+            return Err(AppError::BadRequest("Set up 2-Factor Authentication in Settings before enabling this.".into()));
+        }
+        // Turning an active protection back off needs the same proof as
+        // disabling 2FA itself does — otherwise anyone with the session
+        // could silently strip it without ever seeing the authenticator app.
+        if !v && profile.require_release_code && profile.totp_enabled {
+            super::twofa::require_valid_totp_if_gated(
+                state, user.email.as_deref(), &user.uid, true, &profile, req.totp_code.as_deref(),
+            ).await?;
+        }
         profile.require_release_code = v;
     }
     if let Some(v) = req.withdraw_code_required {
+        if v && !profile.totp_enabled {
+            return Err(AppError::BadRequest("Set up 2-Factor Authentication in Settings before enabling this.".into()));
+        }
+        if !v && profile.withdraw_code_required && profile.totp_enabled {
+            super::twofa::require_valid_totp_if_gated(
+                state, user.email.as_deref(), &user.uid, true, &profile, req.totp_code.as_deref(),
+            ).await?;
+        }
         profile.withdraw_code_required = v;
     }
     if let Some(v) = req.blocked_users {
@@ -462,37 +561,9 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
     }
 
     db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
-    Ok(Json(profile))
+    Ok(Json(profile.redacted()))
 }
 
-#[derive(serde::Deserialize)]
-struct SetWithdrawCodeRequest {
-    code: String,
-}
-
-async fn set_withdraw_code(ctx: Ctx, Json(req): Json<SetWithdrawCodeRequest>) -> Result<Json<UserProfile>, AppError> {
-    let (state, user) = (&ctx.state, &ctx.user);
-    let db = RtdbClient::new(state, &user.id_token);
-    let path = format!("users/{}", user.uid);
-    let val = db.get(&path).await?.ok_or_else(|| AppError::NotFound("Profile not found".into()))?;
-    let mut profile: UserProfile = serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let code = req.code.trim().to_string();
-    if code.is_empty() {
-        profile.withdraw_code_hash = None;
-    } else {
-        if code.len() < 4 || code.len() > 6 || !code.chars().all(|c| c.is_ascii_digit()) {
-            return Err(AppError::BadRequest("Confirmation code must be 4–6 digits".into()));
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}:{}", user.uid, code).as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-        profile.withdraw_code_hash = Some(hash);
-    }
-
-    db.set(&path, &serde_json::to_value(&profile).unwrap()).await?;
-    Ok(Json(profile))
-}
 
 pub async fn resolve_recipient(ctx: Ctx, Json(req): Json<ResolveRecipientRequest>) -> Result<Json<ResolveRecipientResponse>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
@@ -531,7 +602,7 @@ pub async fn resolve_recipient(ctx: Ctx, Json(req): Json<ResolveRecipientRequest
     let lower = identifier.to_lowercase();
     let result = db.get(&format!("usernames/{}", lower)).await?;
     if let Some(val) = result {
-        if let Ok(entry) = serde_json::from_value::<UsernameEntry>(val) {
+        if let Some(entry) = UsernameEntry::from_value(&val, &identifier) {
             let profile = db
                 .get(&format!("users/{}", entry.uid))
                 .await?

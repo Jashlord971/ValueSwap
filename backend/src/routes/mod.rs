@@ -4,11 +4,14 @@ mod ocr;
 mod offers;
 mod swaps;
 mod trades;
+pub mod treasury;
+mod twofa;
 mod users;
 mod wallet;
 pub mod withdrawal;
 
 pub use trades::expire_stale_trades;
+pub use treasury::{process_withdrawal_queue, sweep_all_deposits};
 pub use wallet::sweep_platform_fees_background;
 
 use crate::auth::auth_middleware;
@@ -33,6 +36,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/chat", chat::router())
         .nest("/ocr", ocr::router())
         .nest("/users", users::router())
+        .nest("/2fa", twofa::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -43,6 +47,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/internal/cron/expire-trades", post(cron_expire_trades))
         .route("/internal/cron/sweep-fees", post(cron_sweep_fees))
         .route("/internal/cron/rebalance-offers", post(cron_rebalance_offers))
+        .route("/internal/cron/sweep-deposits", post(cron_sweep_deposits))
+        .route("/internal/cron/process-withdrawals", post(cron_process_withdrawals))
         .route("/wallet/prices", get(wallet::get_prices))
         .route("/offers/payment-methods", get(offers::list_payment_methods))
         .route("/offers/currencies", get(offers::list_currencies))
@@ -80,6 +86,18 @@ async fn cron_rebalance_offers(State(state): State<Arc<AppState>>, headers: Head
     require_cron_key(&state, &headers)?;
     rebalance_all_active_offers(state).await;
     Ok(Json(serde_json::json!({ "ok": true, "job": "rebalance-offers" })))
+}
+
+async fn cron_sweep_deposits(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Json<serde_json::Value>, AppError> {
+    require_cron_key(&state, &headers)?;
+    sweep_all_deposits(state).await;
+    Ok(Json(serde_json::json!({ "ok": true, "job": "sweep-deposits" })))
+}
+
+async fn cron_process_withdrawals(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Json<serde_json::Value>, AppError> {
+    require_cron_key(&state, &headers)?;
+    process_withdrawal_queue(state).await;
+    Ok(Json(serde_json::json!({ "ok": true, "job": "process-withdrawals" })))
 }
 
 pub async fn rebalance_all_active_offers(state: Arc<AppState>) {

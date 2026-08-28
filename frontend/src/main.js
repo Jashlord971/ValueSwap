@@ -6,6 +6,7 @@ import { initChat } from './chat.js'
 import { avatarPathFromProfile } from './avatar.js'
 import { setupUnreadTradeNotifications } from './unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from './dev-balance-tools.js'
+import { gateLoginTwoFactor } from './two-factor.js'
 
 const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
@@ -41,6 +42,8 @@ onAuthChange(async (user) => {
     } catch {
       currentUserProfile = { email: user.email }
     }
+
+    await gateLoginTwoFactor(currentUserProfile)
 
     const label = currentUserProfile?.username
       ? `@${currentUserProfile.username}`

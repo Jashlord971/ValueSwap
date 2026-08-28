@@ -1,8 +1,9 @@
-import { initWallet as apiInitWallet, getLedgerBalance, smartSend, resolveRecipient } from './api.js'
+import { initWallet as apiInitWallet, getLedgerBalance, smartSend, resolveRecipient, getMyProfile } from './api.js'
 import { COINS } from './coin-meta.js'
 import { initializeApp, getApps } from 'firebase/app'
 import { getDatabase, ref, onValue } from 'firebase/database'
 import { firebaseConfig } from './firebase-config.js'
+import { runTotpGatedAction } from './two-factor.js'
 
 let currentWallet = null
 let prices = {}
@@ -305,9 +306,16 @@ function showSendModal(coin) {
       return
     }
 
-    btn.disabled = true; btn.textContent = 'Sending…'
+    let codeRequired = false
     try {
-      const res = await smartSend(to, coin.id, amount)
+      const profile = await getMyProfile()
+      codeRequired = !!profile?.withdraw_code_required
+    } catch {
+      // If we can't confirm the setting, fall through and let the backend
+      // enforce it — it'll return a clear error if a code was actually required.
+    }
+
+    const handleSendResult = (res) => {
       overlay.remove()
       fetchAndRenderBalances()
 
@@ -315,15 +323,19 @@ function showSendModal(coin) {
         const done = makeModalOverlay()
         done.querySelector('.modal').innerHTML = `
           <div class="modal-header">
-            <h2>Withdrawal sent</h2>
+            <h2>Withdrawal queued</h2>
             <button class="btn-modal-close">✕</button>
           </div>
-          <p class="muted">Transaction broadcast successfully.</p>
-          <p style="font-size:0.8rem;word-break:break-all">
-            <strong>Tx hash:</strong><br>
-            <code style="color:#a78bfa">${res.withdrawal.tx_hash}</code>
+          <p class="muted">
+            Your withdrawal has been queued and will be paid out shortly — it isn't sent
+            instantly, since it's paid from the platform's treasury rather than signed on
+            the spot. You can check its status on the Transactions page once it's processed.
           </p>
-          <p class="muted" style="font-size:0.8rem">
+          <p style="margin-top:0.75rem;">
+            <strong>${Number(res.withdrawal.amount).toFixed(8)} ${escHtml(coin.symbol)}</strong> to
+            <code style="word-break:break-all;">${escHtml(res.withdrawal.to_address)}</code>
+          </p>
+          <p class="muted" style="font-size:0.8rem;margin-top:0.5rem">
             Fee deducted: ${res.withdrawal.fee_deducted} ${coin.symbol}
           </p>
         `
@@ -343,6 +355,22 @@ function showSendModal(coin) {
         `
         bindModalClose(done)
       }
+    }
+
+    if (codeRequired) {
+      const { result, cancelled, error } = await runTotpGatedAction(
+        'send this', (code) => smartSend(to, coin.id, amount, code)
+      )
+      if (cancelled) return
+      if (error) { errEl.textContent = error.message; errEl.style.display = 'block'; return }
+      handleSendResult(result)
+      return
+    }
+
+    btn.disabled = true; btn.textContent = 'Sending…'
+    try {
+      const res = await smartSend(to, coin.id, amount)
+      handleSendResult(res)
     } catch (e) {
       errEl.textContent = e.message; errEl.style.display = 'block'
       btn.disabled = false; btn.textContent = 'Send'

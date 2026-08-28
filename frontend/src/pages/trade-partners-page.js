@@ -3,7 +3,7 @@ import { firebaseConfig } from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
 import { upsertUser, updateMyProfile, resolveRecipient, getUserProfile } from '../api.js'
 import { showConfirm } from '../modal.js'
-import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { avatarPathFromProfile, avatarPathFromNumber, profileHref } from '../avatar.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
 
@@ -165,16 +165,19 @@ async function renderTrustedList() {
   )
 
   list.innerHTML = profiles
-    .map(
-      (p) => `
+    .map((p) => {
+      const href = profileHref(p.username)
+      const linkOpen = href ? `<a href="${href}" style="display:contents;color:inherit;text-decoration:none;">` : ''
+      const linkClose = href ? '</a>' : ''
+      return `
       <div class="user-list-item">
-        <img src="${avatarPathFromNumber(p.avatar_number)}" alt="" class="user-list-avatar-img" onerror="this.src='/avatars/1.png'" />
-        <span class="user-list-name">@${p.username}</span>
+        ${linkOpen}<img src="${avatarPathFromNumber(p.avatar_number)}" alt="" class="user-list-avatar-img" onerror="this.src='/avatars/1.png'" />
+        <span class="user-list-name">@${p.username}</span>${linkClose}
         <span class="user-list-tag tag-trusted">Trusted</span>
         <button class="btn-sm" data-untrust="${p.uid}">Remove</button>
       </div>
     `
-    )
+    })
     .join('')
 
   list.querySelectorAll('[data-untrust]').forEach((btn) => {

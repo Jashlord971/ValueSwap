@@ -4,9 +4,12 @@ mod firebase;
 mod models;
 mod moderation;
 mod presence;
+mod rate_limit;
 mod routes;
+mod ttl_cache;
 
 use axum::Router;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -17,6 +20,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 pub struct AdminAccessTokenCache {
     pub access_token: String,
     pub expires_at: u64,
+}
+
+pub struct TotpAttemptState {
+    pub failures: u32,
+    pub locked_until: u64,
 }
 
 pub struct AppState {
@@ -34,6 +42,9 @@ pub struct AppState {
     pub internal_cron_key: String,
     pub mnemonic_key: [u8; 32],
     pub master_seed: [u8; 64],
+    pub totp_attempts: Mutex<HashMap<String, TotpAttemptState>>,
+    pub rate_limits: Mutex<HashMap<String, VecDeque<u64>>>,
+    pub ttl_cache: ttl_cache::TtlCache,
 }
 
 fn load_service_account_fields() -> (String, String, String) {
@@ -170,6 +181,9 @@ async fn main() {
             .unwrap_or_else(|_| std::env::var("SWAP_ADMIN_KEY").unwrap_or_default()),
         mnemonic_key,
         master_seed,
+        totp_attempts: Mutex::new(HashMap::new()),
+        rate_limits: Mutex::new(HashMap::new()),
+        ttl_cache: ttl_cache::TtlCache::new(),
     });
 
     let run_internal_cron = std::env::var("RUN_INTERNAL_CRON")
@@ -193,6 +207,30 @@ async fn main() {
     }
 
     tracing::info!("Offer rebalance cron enabled (every 5 minutes)");
+
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                routes::sweep_all_deposits(sweep_state.clone()).await;
+            }
+        });
+    }
+    tracing::info!("Deposit sweep cron enabled (every 5 minutes)");
+
+    {
+        let withdrawal_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                routes::process_withdrawal_queue(withdrawal_state.clone()).await;
+            }
+        });
+    }
+    tracing::info!("Withdrawal queue processor enabled (every 30 seconds)");
 
     if run_internal_cron {
 
@@ -236,5 +274,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr).await
         .unwrap_or_else(|e| { tracing::error!("Failed to bind {addr}: {e}"); std::process::exit(1); });
     tracing::info!("Server listening on http://{addr}");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    ).await.unwrap();
 }

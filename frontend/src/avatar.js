@@ -54,3 +54,10 @@ export function avatarPathFromProfile(profile) {
   const legacyNumber = avatarNumberFromPhotoUrl(profile?.photo_url)
   return avatarPathFromNumber(legacyNumber ?? MIN_AVATAR_NUMBER)
 }
+
+// The public profile page only exists at /user/<username> — without a
+// resolved username there's nowhere to link to, so callers should fall
+// back to a non-clickable element when this returns null.
+export function profileHref(username) {
+  return username ? `/user/${encodeURIComponent(username)}` : null
+}

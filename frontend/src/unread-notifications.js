@@ -117,15 +117,23 @@ function showIncomingTransactionPopupModal(tx) {
   overlay.id = 'transaction-popup-modal-overlay'
   overlay.className = 'modal-overlay'
   const amount = Number.isFinite(Number(tx.amount)) ? Number(tx.amount).toFixed(8) : '—'
-  const kindLabel = TX_KIND_LABEL[tx.kind] || tx.kind || 'transaction'
+
+  // A dispute resolved in your favor is an escrow release, not a fresh
+  // "payment" landing in your account — call it what it is instead of the
+  // generic trade-payout wording.
+  const isDisputeWin = tx.kind === 'trade' && tx.counterparty_label === 'dispute resolution'
+  const title = isDisputeWin ? 'Dispute Won' : 'Money Received'
+  const bodyText = isDisputeWin
+    ? 'A moderator resolved a dispute in your favor — the escrowed funds have been released to you.'
+    : `You just received a ${escapeHtml(TX_KIND_LABEL[tx.kind] || tx.kind || 'transaction')}.`
 
   overlay.innerHTML = `
     <div class="modal wallet-action-modal" style="max-width:460px;">
       <div class="modal-header">
-        <h2>Money Received</h2>
+        <h2>${title}</h2>
         <button class="btn-modal-close" aria-label="Close">✕</button>
       </div>
-      <p class="muted" style="margin-top:0.6rem;">You just received a ${escapeHtml(kindLabel)}.</p>
+      <p class="muted" style="margin-top:0.6rem;">${bodyText}</p>
       <p style="margin-top:0.9rem;font-size:1.1rem;">
         <strong>${amount} ${escapeHtml(tx.coin || '')}</strong>
       </p>
@@ -232,7 +240,10 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       <span id="nav-bell-badge" class="nav-bell-badge hidden">0</span>
     </button>
     <div id="nav-bell-panel" class="nav-bell-panel hidden">
-      <div class="nav-bell-head">Notifications</div>
+      <div class="nav-bell-head">
+        <span>Notifications</span>
+        <button type="button" id="btn-mark-all-read" class="nav-bell-markall">Mark all read</button>
+      </div>
       <div id="nav-bell-list" class="nav-bell-list">
         <p class="muted">No notifications.</p>
       </div>
@@ -247,9 +258,11 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   const badge = shell.querySelector('#nav-bell-badge')
   const panel = shell.querySelector('#nav-bell-panel')
   const listEl = shell.querySelector('#nav-bell-list')
+  const markAllBtn = shell.querySelector('#btn-mark-all-read')
 
   let timer = null
   let running = false
+  let lastRenderedItems = []
   let creatorUnsub = null
   let ownerUnsub = null
 
@@ -427,11 +440,13 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   }
 
   function markRead(tradeId, options = {}) {
-    if (!tradeId) return
-    const ts = Number(options.messageTs || latestIncomingByTrade[tradeId] || 0)
-    if (ts > 0) {
-      markChatRead(tradeId).catch(() => {})
-    }
+    if (!tradeId) return Promise.resolve()
+
+    // Always tell the backend this trade's chat was opened/acknowledged —
+    // it computes "read up to" from the latest partner message itself, so
+    // this is safe/idempotent even if we don't have a local timestamp yet
+    // (e.g. right after a fresh page load, before any refresh() has run).
+    const readPromise = markChatRead(tradeId).catch(() => {})
 
     const activityTs = Number(options.messageActivityTs || options.messageTs || 0)
     if (activityTs > 0) {
@@ -444,6 +459,31 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       seenTradeStateByTrade[tradeId] = currentFingerprint
       persistSeenTradeState()
     }
+
+    return readPromise
+  }
+
+  async function markAllRead() {
+    const items = lastRenderedItems
+    if (!items.length) return
+
+    markAllBtn.disabled = true
+    try {
+      const seenTradeIds = new Set()
+      await Promise.all(items.map((item) => {
+        const tradeId = item.trade.id
+        if (!tradeId || seenTradeIds.has(tradeId)) return Promise.resolve()
+        seenTradeIds.add(tradeId)
+        return markRead(tradeId, {
+          messageTs: item.latestIncomingTs,
+          messageActivityTs: item.latestAnyMessageTs,
+          tradeFingerprint: item.tradeFingerprint,
+        })
+      }))
+      await refresh()
+    } finally {
+      markAllBtn.disabled = false
+    }
   }
 
   function render(items, totalNotifications) {
@@ -453,6 +493,8 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
     } else {
       badge.classList.add('hidden')
     }
+
+    markAllBtn.disabled = !items.length
 
     if (!items.length) {
       listEl.innerHTML = '<p class="muted">No notifications.</p>'
@@ -623,12 +665,15 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
 
       const sortedItems = notificationItems.sort((a, b) => b.timestamp - a.timestamp)
       const totalNotifications = sortedItems.reduce((sum, item) => sum + (item.kind === 'message' ? item.unreadCount : 1), 0)
+      lastRenderedItems = sortedItems
       render(sortedItems, totalNotifications)
       desktopNotify(sortedItems)
 
       sortedItems
         .filter((item) => item.kind === 'trade' && item.isNewTrade)
         .forEach((item) => maybeShowIncomingTradePopup(item.trade))
+    } catch (e) {
+      console.warn('[notifications] refresh failed, will retry:', e?.message || e)
     } finally {
       running = false
     }
@@ -651,13 +696,21 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
   const onOpenChat = (e) => {
     const tradeId = e?.detail?.tradeId
     if (!tradeId) return
-    markRead(tradeId)
-    refresh()
+    // Await the read-receipt call before refreshing so the notification
+    // panel/badge reflects the just-opened trade as read on this very
+    // refresh, instead of racing the backend and needing another poll tick.
+    markRead(tradeId).then(() => refresh())
+  }
+
+  const onMarkAllClick = (e) => {
+    e.stopPropagation()
+    void markAllRead()
   }
 
   bellBtn.addEventListener('click', onBellClick)
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('open-chat', onOpenChat)
+  markAllBtn.addEventListener('click', onMarkAllClick)
 
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {})
@@ -680,6 +733,7 @@ export function setupUnreadTradeNotifications({ user, navAuth, pollMs = 15000 })
       bellBtn.removeEventListener('click', onBellClick)
       document.removeEventListener('click', onDocumentClick)
       document.removeEventListener('open-chat', onOpenChat)
+      markAllBtn.removeEventListener('click', onMarkAllClick)
       closeTradePopupModal()
       shell.remove()
     },

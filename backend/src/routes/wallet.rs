@@ -1,7 +1,7 @@
 use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{LedgerBalance, SendRequest, SmartSendRequest, SmartSendResponse, Transaction, TransferRecord, UsernameEntry, WalletBalances, WalletInfo};
+use crate::models::{LedgerBalance, SendRequest, SmartSendRequest, SmartSendResponse, Transaction, TransferRecord, UsernameEntry, UserProfile, WalletBalances, WalletInfo};
 use crate::AppState;
 use axum::http::HeaderMap;
 use axum::{
@@ -98,7 +98,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/dev/set-balance-usd", post(dev_set_balance_usd))
         .route("/platform-fees", get(get_platform_fees))
         .route("/platform-fees/sweep", post(sweep_platform_fees))
-        .route("/treasury/init", post(init_treasury))
+        .route("/treasury/addresses", get(get_treasury_addresses))
         .route("/send", post(send_internal))
         .route("/smart-send", post(smart_send))
         .route("/claim-deposits", post(claim_deposits))
@@ -149,7 +149,7 @@ async fn init_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
     Ok(Json(wallet))
 }
 
-fn wallet_index_for_uid(uid: &str) -> u32 {
+pub(crate) fn wallet_index_for_uid(uid: &str) -> u32 {
     let mut hasher = Sha256::new();
     hasher.update(uid.as_bytes());
     let digest = hasher.finalize();
@@ -163,7 +163,19 @@ async fn get_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
 
 async fn get_ledger(ctx: Ctx) -> Result<Json<LedgerBalance>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    apply_onchain_deposits(&ctx.state, &db, &ctx.user.uid).await?;
+
+    // apply_onchain_deposits fires 7 parallel external RPC/explorer calls —
+    // expensive and, more importantly, hitting third-party rate limits.
+    // Passive balance checks (this endpoint gets polled every 45s per open
+    // wallet tab) don't need to redo that on every call; skip it if we
+    // already checked recently. claim_deposits (explicit "sync now") below
+    // bypasses this and always checks fresh.
+    let onchain_check_key = format!("onchain-check:{}", ctx.user.uid);
+    if ctx.state.ttl_cache.get::<bool>(&onchain_check_key).await.is_none() {
+        apply_onchain_deposits(&ctx.state, &db, &ctx.user.uid).await?;
+        ctx.state.ttl_cache.set(&onchain_check_key, &true, 20).await;
+    }
+
     let balance = fetch_ledger_balance(&db, &ctx.user.uid).await?;
     Ok(Json(balance))
 }
@@ -298,45 +310,39 @@ async fn sweep_platform_fees(ctx: Ctx, Json(req): Json<SweepFeesRequest>) -> Res
     })))
 }
 
-async fn init_treasury(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
+/// Deterministic index for the platform treasury's addresses — same
+/// derivation scheme as user wallets (wallet_index_for_uid), just a fixed
+/// reserved index instead of one hashed from a uid. Keys are re-derived
+/// from the master seed on demand wherever they're needed (sweeping,
+/// paying out queued withdrawals) and are NEVER written anywhere — not to
+/// RTDB, not to logs. This used to write the raw private keys *and the
+/// plaintext master mnemonic* to the `treasury` RTDB node, reachable by
+/// any logged-in user with no admin check — that would have handed out
+/// the key to every user's wallet on the platform, not just the
+/// treasury's. Confirmed (Aug 2026) it was never actually called in
+/// production before being caught and rewritten.
+pub const TREASURY_INDEX: u32 = 900_000;
+
+async fn get_treasury_addresses(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    if !crate::moderation::is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
+        return Err(AppError::Forbidden("Moderator access required".into()));
+    }
+
     let seed = &ctx.state.master_seed;
-    let index: u32 = 900_000;
-
-    let btc_address = derive_btc_address_indexed(seed, index)
+    let btc_address = derive_btc_address_indexed(seed, TREASURY_INDEX)
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let eth_address = derive_eth_address_indexed(seed, index)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let tron_address = derive_tron_address_indexed(seed, index)
+    let eth_address = derive_eth_address_indexed(seed, TREASURY_INDEX)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let btc_secret = derive_path_secret_hex(seed, &format!("m/84'/0'/{}'/0/0", index))?;
-    let eth_secret = derive_path_secret_hex(seed, &format!("m/44'/60'/{}'/0/0", index))?;
-    let trx_secret = derive_path_secret_hex(seed, &format!("m/44'/195'/{}'/0/0", index))?;
-    let mnemonic = std::env::var("MASTER_MNEMONIC").unwrap_or_default();
-
-    let payload = serde_json::json!({
+    Ok(Json(serde_json::json!({
         "wallets": {
             "btc": btc_address,
             "eth": eth_address,
-            "trx": tron_address,
             "usdt": eth_address,
             "usdc": eth_address,
         },
-        "wallet_secrets": {
-            "btc": btc_secret,
-            "eth": eth_secret,
-            "trx": trx_secret,
-        },
-        "mnemonic_plaintext": mnemonic,
-        "created_at": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    });
-
-    db.set("treasury", &payload).await?;
-    Ok(Json(payload))
+    })))
 }
 
 fn balance_updates(from_uid: &str, to_uid: &str, coin: &str, sender_new: f64, recipient_new: f64) -> serde_json::Map<String, serde_json::Value> {
@@ -356,6 +362,14 @@ async fn fetch_wallet_info(db: &RtdbClient<'_>, uid: &str) -> Result<WalletInfo,
     serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
 }
 
+async fn fetch_user_profile(db: &RtdbClient<'_>, uid: &str) -> Result<UserProfile, AppError> {
+    let val = db
+        .get(&format!("users/{}", uid))
+        .await?
+        .ok_or_else(|| AppError::NotFound("User profile not found".into()))?;
+    serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
+}
+
 async fn send_internal(ctx: Ctx, Json(req): Json<SendRequest>) -> Result<Json<TransferRecord>, AppError> {
     let (state, user) = (&ctx.state, &ctx.user);
     if req.amount <= 0.0 {
@@ -364,8 +378,22 @@ async fn send_internal(ctx: Ctx, Json(req): Json<SendRequest>) -> Result<Json<Tr
     let coin = req.coin.to_lowercase();
     validate_coin(&coin)?;
 
+    crate::rate_limit::check_rate_limit(
+        state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
+    ).await?;
+
     let db = RtdbClient::new(&state, &user.id_token);
     tracing::info!("/wallet/send: from_uid={}, to_email={}, coin={}, amount={}", user.uid, req.to_email, req.coin, req.amount);
+
+    let sender_profile = fetch_user_profile(&db, &user.uid).await?;
+    super::twofa::require_valid_totp_if_gated(
+        state,
+        user.email.as_deref(),
+        &user.uid,
+        sender_profile.withdraw_code_required,
+        &sender_profile,
+        req.totp_code.as_deref(),
+    ).await?;
 
     let users_result = db.query_equal("users", "email", &req.to_email).await?;
     let recipient_uid = match users_result {
@@ -444,6 +472,10 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
     let coin = req.coin.to_lowercase();
     validate_coin(&coin)?;
 
+    crate::rate_limit::check_rate_limit(
+        state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
+    ).await?;
+
     let db = RtdbClient::new(&state, &user.id_token);
     let to_raw = req.to.trim().to_string();
     let identifier = to_raw.trim_start_matches('@');
@@ -451,6 +483,16 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
     if identifier.is_empty() {
         return Err(AppError::BadRequest("Recipient cannot be empty".into()));
     }
+
+    let sender_profile = fetch_user_profile(&db, &user.uid).await?;
+    super::twofa::require_valid_totp_if_gated(
+        state,
+        user.email.as_deref(),
+        &user.uid,
+        sender_profile.withdraw_code_required,
+        &sender_profile,
+        req.totp_code.as_deref(),
+    ).await?;
 
     let recipient_uid: Option<String> =
         if let Some(wallet_field) = detect_address_wallet_field(identifier) {
@@ -460,7 +502,7 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
 
             let lower = identifier.to_lowercase();
             let result = db.get(&format!("usernames/{}", lower)).await?;
-            match result.and_then(|v| serde_json::from_value::<UsernameEntry>(v).ok()) {
+            match result.and_then(|v| UsernameEntry::from_value(&v, identifier)) {
                 None => {
                     return Err(AppError::NotFound(format!("User '{}' not found on this platform", identifier)))
                 }
@@ -618,7 +660,7 @@ pub fn derive_eth_key_indexed(seed: &[u8], index: u32) -> Result<secp256k1::Secr
     Ok(secp256k1::SecretKey::from_slice(&ext.secret())?)
 }
 
-fn derive_eth_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow::Error> {
+pub(crate) fn derive_eth_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow::Error> {
     let secret_key = derive_eth_key_indexed(seed, index)?;
     let secp = secp256k1::Secp256k1::new();
     let public_key = secret_key.public_key(&secp);
@@ -630,7 +672,7 @@ fn derive_eth_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow:
     Ok(format!("0x{}", hex::encode(&hash[12..])))
 }
 
-fn derive_btc_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow::Error> {
+pub(crate) fn derive_btc_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow::Error> {
     let secp = Secp256k1::new();
     let xprv = Xpriv::new_master(Network::Bitcoin, seed)?;
     let path = DerivationPath::from_str(&format!("m/84'/0'/{}'/0/0", index))?;
@@ -661,13 +703,7 @@ fn derive_tron_address_indexed(seed: &[u8], index: u32) -> Result<String, anyhow
     Ok(bs58::encode(payload).into_string())
 }
 
-fn derive_path_secret_hex(seed: &[u8], path: &str) -> Result<String, AppError> {
-    let ext = tiny_hderive::bip32::ExtendedPrivKey::derive(seed, path)
-        .map_err(|e| AppError::Internal(format!("HD derive failed for {}: {:?}", path, e)))?;
-    Ok(hex::encode(ext.secret()))
-}
-
-async fn fetch_btc_balance(client: &reqwest::Client, address: &str) -> Result<f64, anyhow::Error> {
+pub(crate) async fn fetch_btc_balance(client: &reqwest::Client, address: &str) -> Result<f64, anyhow::Error> {
     let url = format!("https://blockstream.info/api/address/{}", address);
     let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
     let funded = resp["chain_stats"]["funded_txo_sum"].as_u64().unwrap_or(0);
@@ -675,7 +711,7 @@ async fn fetch_btc_balance(client: &reqwest::Client, address: &str) -> Result<f6
     Ok(funded.saturating_sub(spent) as f64 / 1e8)
 }
 
-async fn fetch_eth_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, address: &str) -> Result<f64, anyhow::Error> {
+pub(crate) async fn fetch_eth_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, address: &str) -> Result<f64, anyhow::Error> {
     let body = serde_json::json!({
         "jsonrpc": "2.0", "method": "eth_getBalance",
         "params": [address, "latest"], "id": 1,
@@ -692,7 +728,7 @@ async fn fetch_eth_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, add
     Ok(wei as f64 / 1e18)
 }
 
-async fn fetch_erc20_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, address: &str, contract: &str, decimals: u32) -> Result<f64, anyhow::Error> {
+pub(crate) async fn fetch_erc20_balance_from_rpc(client: &reqwest::Client, rpc_url: &str, address: &str, contract: &str, decimals: u32) -> Result<f64, anyhow::Error> {
     let addr_clean = address.trim_start_matches("0x");
     let data = format!("0x70a08231{:0>64}", addr_clean);
     let body = serde_json::json!({

@@ -2,7 +2,7 @@ use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
 use crate::models::{ChatMessage, Trade, TradeStatus};
-use crate::moderation::is_moderator_email;
+use crate::moderation::is_moderator_email_cached;
 use crate::presence::{ACTIVE_WINDOW_SECS, HEARTBEAT_MIN_INTERVAL_SECS};
 use crate::AppState;
 use axum::{
@@ -37,7 +37,7 @@ fn redact_message_for(mut msg: ChatMessage, viewer_uid: &str, viewer_is_moderato
 
 async fn get_messages(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<Vec<ChatMessage>>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let viewer_is_moderator = trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid;
 
     let docs = db.get_collection(&format!("chats/{}/messages", trade_id)).await?;
@@ -86,8 +86,14 @@ struct SyncChatQuery {
 async fn send_message(ctx: Ctx, Path(trade_id): Path<String>, Json(req): Json<SendMessageRequest>) -> Result<Json<ChatMessage>, AppError> {
     let started = Instant::now();
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), true).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), true).await?;
     let sender_uid = ctx.user.uid.clone();
+
+    // General flood guard, separate from the post-dispute message cap below —
+    // this covers ordinary spamming of a single counterparty's chat.
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("chat-send:{}:{}", sender_uid, trade_id), 20, 60, "sending messages in this chat",
+    ).await?;
 
     if matches!(trade.status, TradeStatus::Disputed) {
         if let Some(raised_at) = trade.dispute_raised_at {
@@ -280,7 +286,7 @@ struct ChatMeta {
 async fn sync_chat(ctx: Ctx, Path(trade_id): Path<String>, Query(query): Query<SyncChatQuery>) -> Result<Json<ChatSyncResponse>, AppError> {
     let started = Instant::now();
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let trade_open = is_trade_open_for_chat(&trade);
     let viewer_is_moderator = trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid;
     let partner_uid = if trade.creator_uid == ctx.user.uid { trade.offer_owner_uid } else { trade.creator_uid };
@@ -369,7 +375,7 @@ async fn sync_chat(ctx: Ctx, Path(trade_id): Path<String>, Query(query): Query<S
 
 async fn get_partner_receipt_status(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReceiptStatusResponse>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let partner_uid = if trade.creator_uid == ctx.user.uid {
         trade.offer_owner_uid.clone()
     } else {
@@ -385,7 +391,7 @@ async fn get_partner_receipt_status(ctx: Ctx, Path(trade_id): Path<String>) -> R
 
 async fn mark_delivered(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReceiptStatusResponse>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
 
     let mut receipt = get_user_receipt(&db, &trade_id, &ctx.user.uid).await?;
     if !is_trade_open_for_chat(&trade) {
@@ -417,7 +423,7 @@ async fn mark_delivered(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<R
 async fn mark_read(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReadStatusResponse>, AppError> {
     let started = Instant::now();
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    let trade = ensure_trade_chat_access(&db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
+    let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let partner_uid = if trade.creator_uid == ctx.user.uid {
         trade.offer_owner_uid.clone()
     } else {
@@ -502,7 +508,7 @@ async fn mark_read(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReadSt
     Ok(Json(ReadStatusResponse {last_read_at: next_read_at}))
 }
 
-async fn ensure_trade_chat_access(db: &RtdbClient<'_>, trade_id: &str, uid: &str, email: Option<&str>, for_sending: bool) -> Result<Trade, AppError> {
+async fn ensure_trade_chat_access(state: &AppState, db: &RtdbClient<'_>, trade_id: &str, uid: &str, email: Option<&str>, for_sending: bool) -> Result<Trade, AppError> {
     let val = db
         .get(&format!("trades/{}", trade_id))
         .await?
@@ -516,7 +522,7 @@ async fn ensure_trade_chat_access(db: &RtdbClient<'_>, trade_id: &str, uid: &str
     let is_party = trade.creator_uid == uid || trade.offer_owner_uid == uid;
     if !is_party {
 
-        if !matches!(trade.status, TradeStatus::Disputed) || !is_moderator_email(db, email).await? {
+        if !matches!(trade.status, TradeStatus::Disputed) || !is_moderator_email_cached(state, db, email).await? {
             return Err(AppError::Forbidden("Not a party to this trade".into()));
         }
         if for_sending {
@@ -543,8 +549,25 @@ async fn post_system_message(
     sender_role: Option<&str>,
     text: &str,
 ) -> Result<(), AppError> {
+    post_system_message_with_id(db, trade_id, Uuid::new_v4().to_string(), sender_uid, sender_role, text).await
+}
+
+// Same as post_system_message, but the caller picks the message id instead
+// of a fresh random UUID. Used where the same notice can legitimately be
+// triggered more than once concurrently (e.g. announce_moderator_join runs
+// on every chat-load request, not just once) — a deterministic id means two
+// racing calls both write to the same RTDB key instead of each creating
+// their own message, so the notice can never appear duplicated.
+async fn post_system_message_with_id(
+    db: &RtdbClient<'_>,
+    trade_id: &str,
+    message_id: String,
+    sender_uid: &str,
+    sender_role: Option<&str>,
+    text: &str,
+) -> Result<(), AppError> {
     let msg = ChatMessage {
-        id: Uuid::new_v4().to_string(),
+        id: message_id,
         trade_id: trade_id.to_string(),
         sender_uid: sender_uid.to_string(),
         text: Some(text.to_string()),
@@ -565,7 +588,38 @@ async fn post_system_message(
 }
 
 pub async fn insert_dispute_notice(db: &RtdbClient<'_>, trade_id: &str, raiser_uid: &str, text: &str) -> Result<(), AppError> {
-    post_system_message(db, trade_id, raiser_uid, None, text).await
+    let full_text = format!(
+        "{text}\n\n\
+        We will look to resolve this dispute within 96 hours of this claim being made.\n\n\
+        Both parties: please add evidence here in the chat to help a moderator resolve this quickly. Good evidence includes:\n\
+        - A screen recording of the payment being sent (or not received)\n\
+        - Payment receipts or bank/app confirmation screenshots\n\
+        - Transaction IDs or reference numbers\n\
+        - Timestamps showing when payment was expected vs. sent\n\n\
+        When attaching evidence, you can choose to show it to the entire chat or keep it visible to the moderator only. \
+        Each of you can send up to {MAX_MESSAGES_PER_PARTY_AFTER_DISPUTE} messages after this dispute, so make them count."
+    );
+    post_system_message(db, trade_id, raiser_uid, None, &full_text).await
+}
+
+pub async fn insert_dispute_resolved_notice(db: &RtdbClient<'_>, trade_id: &str, resolver_uid: &str) -> Result<(), AppError> {
+    post_system_message(
+        db,
+        trade_id,
+        resolver_uid,
+        Some("moderator"),
+        "This dispute has been resolved by a moderator.",
+    ).await
+}
+
+pub async fn insert_payment_verifying_notice(db: &RtdbClient<'_>, trade_id: &str, buyer_uid: &str) -> Result<(), AppError> {
+    post_system_message(
+        db,
+        trade_id,
+        buyer_uid,
+        None,
+        "Your partner is verifying the payment and will be with you shortly.",
+    ).await
 }
 
 async fn announce_moderator_join(db: &RtdbClient<'_>, trade_id: &str, moderator_uid: &str) -> Result<(), AppError> {
@@ -574,7 +628,8 @@ async fn announce_moderator_join(db: &RtdbClient<'_>, trade_id: &str, moderator_
         return Ok(());
     }
 
-    post_system_message(db, trade_id, moderator_uid, Some("moderator"), "Moderator entered the chat").await?;
+    let message_id = format!("modjoin-{}", moderator_uid);
+    post_system_message_with_id(db, trade_id, message_id, moderator_uid, Some("moderator"), "Moderator entered the chat").await?;
     db.set(&marker_path, &serde_json::json!(true)).await?;
     Ok(())
 }

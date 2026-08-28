@@ -4,7 +4,7 @@ import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
 import { upsertUser, listTrades } from '../api.js'
 import { cacheGet, cacheInvalidate } from '../cache.js'
-import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { avatarPathFromProfile, avatarPathFromNumber, profileHref } from '../avatar.js'
 import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
@@ -87,6 +87,9 @@ function buildPastTradeCard(t) {
   const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerDisplay = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
+  const partnerHref = profileHref(partnerName)
+  const avatarTag = partnerHref ? 'a' : 'span'
+  const nameTag   = partnerHref ? 'a' : 'span'
 
   const currency  = t.currency || ''
   const coin      = t.coin || ''
@@ -98,13 +101,13 @@ function buildPastTradeCard(t) {
     <div class="trade-card trade-card-past" data-id="${escHtml(t.id)}">
       <div class="trade-card-header">
         <div class="trade-partner">
-          <span class="trade-partner-avatar avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+          <${avatarTag} ${partnerHref ? `href="${escHtml(partnerHref)}"` : ''} class="trade-partner-avatar avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
             <img src="${escHtml(partnerAvatarPath)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
             <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
-          </span>
+          </${avatarTag}>
           <div>
             <span class="trade-partner-label">Partner</span>
-            <span class="trade-partner-id">${escHtml(partnerDisplay)}</span>
+            <${nameTag} ${partnerHref ? `href="${escHtml(partnerHref)}"` : ''} class="trade-partner-id">${escHtml(partnerDisplay)}</${nameTag}>
           </div>
         </div>
         <span class="trade-status-badge status-${escHtml(t.status)}">${escHtml(t.status)}</span>

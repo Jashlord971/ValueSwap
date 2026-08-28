@@ -20,8 +20,10 @@ pub struct UserProfile {
     pub require_release_code: bool,
     #[serde(default)]
     pub withdraw_code_required: bool,
+    #[serde(default)]
+    pub totp_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub withdraw_code_hash: Option<String>,
+    pub totp_secret_enc: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_users: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -42,6 +44,21 @@ pub struct UserProfile {
     pub banned_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banned_by_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_updated_at: Option<u64>,
+}
+
+impl UserProfile {
+    /// Strip fields that should never leave the server, even encrypted —
+    /// call this on every UserProfile returned as an HTTP response.
+    pub fn redacted(mut self) -> Self {
+        self.totp_secret_enc = None;
+        self
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,6 +80,22 @@ pub struct UsernameEntry {
     pub display: String,
 }
 
+impl UsernameEntry {
+    /// Some `usernames/{lower}` nodes predate the `{uid, display}` shape and
+    /// still hold a bare uid string. Parse either shape instead of erroring
+    /// (or, worse, silently failing lookups) on the legacy ones.
+    pub fn from_value(v: &serde_json::Value, fallback_display: &str) -> Option<Self> {
+        match v {
+            serde_json::Value::String(uid) => Some(UsernameEntry {
+                uid: uid.clone(),
+                display: fallback_display.to_string(),
+            }),
+            serde_json::Value::Object(_) => serde_json::from_value::<UsernameEntry>(v.clone()).ok(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
     pub username: Option<String>,
@@ -72,6 +105,8 @@ pub struct UpdateProfileRequest {
     pub avatar_number: Option<u8>,
     pub require_release_code: Option<bool>,
     pub withdraw_code_required: Option<bool>,
+    #[serde(default)]
+    pub totp_code: Option<String>,
     pub blocked_users: Option<Vec<String>>,
     pub trusted_users: Option<Vec<String>>,
 }
@@ -80,11 +115,19 @@ fn default_avatar_number() -> u8 {
     1
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CompleteTradeRequest {
+    #[serde(default)]
+    pub totp_code: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SmartSendRequest {
     pub to: String,
     pub coin: String,
     pub amount: f64,
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,6 +183,8 @@ pub struct SendRequest {
     pub to_email: String,
     pub coin: String,
     pub amount: f64,
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -181,15 +226,51 @@ pub struct WithdrawRequest {
     pub coin: String,
     pub to_address: String,
     pub amount: f64,
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WithdrawResponse {
-    pub tx_hash: String,
+    pub request_id: String,
+    pub status: String,
     pub coin: String,
     pub amount: f64,
     pub to_address: String,
     pub fee_deducted: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum WithdrawalRequestStatus {
+    Queued,
+    Completed,
+    Failed,
+}
+
+/// External (on-chain) withdrawals are queued rather than signed
+/// synchronously — see the sweep/treasury model in wallet.rs. The ledger
+/// is debited the moment this is created, so it can't be double-spent
+/// while queued; a background worker pays it out of the treasury once
+/// funds are available and fills in tx_hash/processed_at.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WithdrawalRequest {
+    pub id: String,
+    pub uid: String,
+    pub coin: String,
+    pub to_address: String,
+    pub amount: f64,
+    pub fee: f64,
+    pub status: WithdrawalRequestStatus,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

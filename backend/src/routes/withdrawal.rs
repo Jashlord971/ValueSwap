@@ -2,7 +2,7 @@
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{LedgerBalance, WithdrawRequest, WithdrawResponse};
+use crate::models::{LedgerBalance, UserProfile, WithdrawRequest, WithdrawResponse};
 use crate::AppState;
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -10,56 +10,29 @@ use aes_gcm::{
 };
 use axum::{
     extract::{Extension, State},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
-use bip39::Mnemonic;
 use rand::RngCore;
 use secp256k1::{Message, Secp256k1, SecretKey};
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/withdraw", post(withdraw_handler))
+    Router::new()
+        .route("/withdraw", post(withdraw_handler))
+        .route("/withdrawals", get(list_withdrawals))
 }
 
-#[allow(dead_code)]
-pub async fn store_mnemonic(
-    db: &RtdbClient<'_>,
-    uid: &str,
-    mnemonic: &str,
-    key: &[u8; 32],
-) -> Result<(), AppError> {
-    let enc = encrypt_mnemonic(mnemonic, key)?;
-    db.set(
-        &format!("wallet_secrets/{}", uid),
-        &serde_json::json!({ "enc": enc }),
-    )
-    .await
-}
+// The legacy per-user encrypted-mnemonic path (store_mnemonic/load_mnemonic,
+// wallet_secrets/{uid}) has been removed — every wallet is now derived from
+// the master seed + wallet_indices/{uid}, and neither sweeping nor the
+// treasury withdrawal queue ever needs a per-user mnemonic. encrypt_mnemonic/
+// decrypt_mnemonic below are still used directly (e.g. by twofa.rs for TOTP
+// secrets), just no longer wrapped in the RTDB-backed helpers that used to
+// store a whole mnemonic under a user's uid.
 
-pub async fn load_mnemonic(
-    db: &RtdbClient<'_>,
-    uid: &str,
-    key: &[u8; 32],
-) -> Result<String, AppError> {
-    let val = db
-        .get(&format!("wallet_secrets/{}", uid))
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(
-                "No stored mnemonic — wallet may need re-initialisation".into(),
-            )
-        })?;
-    let enc = val["enc"]
-        .as_str()
-        .ok_or_else(|| AppError::Internal("Malformed wallet_secrets node".into()))?;
-
-    decrypt_mnemonic(enc, key)
-}
-
-#[allow(dead_code)]
-fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> {
+pub fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
 
     let mut nonce_bytes = [0u8; 12];
@@ -77,7 +50,7 @@ fn encrypt_mnemonic(mnemonic: &str, key: &[u8; 32]) -> Result<String, AppError> 
     ))
 }
 
-fn decrypt_mnemonic(stored: &str, key: &[u8; 32]) -> Result<String, AppError> {
+pub fn decrypt_mnemonic(stored: &str, key: &[u8; 32]) -> Result<String, AppError> {
     let (nonce_hex, ct_hex) = stored
         .split_once(':')
         .ok_or_else(|| AppError::Internal("Invalid encrypted mnemonic format".into()))?;
@@ -109,14 +82,50 @@ async fn withdraw_handler(
     Json(req): Json<WithdrawRequest>,
 ) -> Result<Json<WithdrawResponse>, AppError> {
     let coin = req.coin.to_lowercase();
+
+    // Shares a bucket with /wallet/send and /wallet/smart-send — this is
+    // about how often money can leave via *any* path, not each one
+    // separately, so switching endpoints doesn't reset the limit.
+    crate::rate_limit::check_rate_limit(
+        &state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
+    ).await?;
+
     let db = RtdbClient::new(&state, &user.id_token);
+
+    let sender_profile = fetch_user_profile(&db, &user.uid).await?;
+    super::twofa::require_valid_totp_if_gated(
+        &state,
+        user.email.as_deref(),
+        &user.uid,
+        sender_profile.withdraw_code_required,
+        &sender_profile,
+        req.totp_code.as_deref(),
+    ).await?;
+
     let resp = do_withdraw(&db, &state, &user.uid, &coin, &req.to_address, req.amount).await?;
     Ok(Json(resp))
 }
 
+async fn fetch_user_profile(db: &RtdbClient<'_>, uid: &str) -> Result<UserProfile, AppError> {
+    let val = db
+        .get(&format!("users/{}", uid))
+        .await?
+        .ok_or_else(|| AppError::NotFound("User profile not found".into()))?;
+    serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// Queues an external withdrawal instead of signing it synchronously. The
+/// ledger is debited right away (so the same balance can't be queued
+/// twice), and a WithdrawalRequest is written for the background
+/// treasury::process_withdrawal_queue worker to actually pay out once the
+/// treasury has the funds (see treasury.rs for why: withdrawals used to
+/// sign directly from the requesting user's own deposit address, which
+/// only works if their ledger balance matches what's physically on that
+/// one address — untrue once money arrives via internal transfer or a
+/// trade payout).
 pub async fn do_withdraw(
     db: &RtdbClient<'_>,
-    state: &Arc<AppState>,
+    _state: &Arc<AppState>,
     uid: &str,
     coin: &str,
     to_address: &str,
@@ -148,40 +157,6 @@ pub async fn do_withdraw(
         )));
     }
 
-    let seed_storage;
-    let (seed, account_index): (&[u8], u32) =
-        if let Some(idx_val) = db.get(&format!("wallet_indices/{}", uid)).await? {
-            let index = idx_val.as_u64().unwrap_or(0) as u32;
-            (&state.master_seed, index)
-        } else {
-
-            let mnemonic_str = load_mnemonic(db, uid, &state.mnemonic_key).await?;
-            let mnemonic = Mnemonic::parse(&mnemonic_str)
-                .map_err(|e| AppError::Internal(format!("Mnemonic parse failed: {e}")))?;
-            seed_storage = mnemonic.to_seed("");
-            (&seed_storage, 0u32)
-        };
-
-    let tx_hash = match coin {
-        "eth" => broadcast_eth(state, seed, account_index, to_address, amount, None).await?,
-        "usdt" => {
-            broadcast_eth(
-                state, seed, account_index,
-                to_address, amount,
-                Some("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
-            ).await?
-        }
-        "usdc" => {
-            broadcast_eth(
-                state, seed, account_index,
-                to_address, amount,
-                Some("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
-            ).await?
-        }
-        "btc" => broadcast_btc(state, seed, account_index, to_address, amount).await?,
-        _ => unreachable!(),
-    };
-
     let new_balance = available - total;
     let mut updates = serde_json::Map::new();
     updates.insert(
@@ -190,19 +165,33 @@ pub async fn do_withdraw(
     );
     db.multi_path_update(updates).await?;
 
+    let request = crate::models::WithdrawalRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        uid: uid.to_string(),
+        coin: coin.to_string(),
+        to_address: to_address.to_string(),
+        amount,
+        fee,
+        status: crate::models::WithdrawalRequestStatus::Queued,
+        created_at: unix_now(),
+        processed_at: None,
+        tx_hash: None,
+        error: None,
+        attempts: 0,
+    };
+    db.set(
+        &format!("withdrawal_requests/{}", request.id),
+        &serde_json::to_value(&request).unwrap(),
+    ).await?;
+
     tracing::info!(
-        "Withdrawal uid={} coin={} amount={} fee={} to={} tx={}",
-        uid, coin, amount, fee, to_address, tx_hash
+        "Withdrawal queued uid={} coin={} amount={} fee={} to={} request_id={}",
+        uid, coin, amount, fee, to_address, request.id
     );
 
-    if let Err(e) = super::wallet::record_transaction(
-        db, uid, "withdrawal", "out", coin, amount, None, Some(to_address), Some(&tx_hash),
-    ).await {
-        tracing::warn!("Failed to record withdrawal transaction for {}: {}", uid, e);
-    }
-
     Ok(WithdrawResponse {
-        tx_hash,
+        request_id: request.id,
+        status: "queued".to_string(),
         coin: coin.to_string(),
         amount,
         to_address: to_address.to_string(),
@@ -210,7 +199,24 @@ pub async fn do_withdraw(
     })
 }
 
-async fn broadcast_eth(
+fn unix_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+async fn list_withdrawals(ctx: crate::auth::Ctx) -> Result<Json<Vec<crate::models::WithdrawalRequest>>, AppError> {
+    let admin_db = RtdbClient::new_admin(&ctx.state);
+    let docs = admin_db.get_collection("withdrawal_requests").await?;
+    let mut mine: Vec<crate::models::WithdrawalRequest> = docs
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<crate::models::WithdrawalRequest>(v).ok())
+        .filter(|r| r.uid == ctx.user.uid)
+        .collect();
+    mine.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(Json(mine))
+}
+
+pub(crate) async fn broadcast_eth(
     state: &AppState,
     seed: &[u8],
     account_index: u32,
@@ -389,13 +395,13 @@ async fn eth_send_raw_tx(client: &reqwest::Client, raw_tx: &str) -> Result<Strin
     Ok(resp["result"].as_str().unwrap_or("").to_string())
 }
 
-struct BtcUtxo {
-    txid: String,
-    vout: u32,
-    value: u64,
+pub(crate) struct BtcUtxo {
+    pub(crate) txid: String,
+    pub(crate) vout: u32,
+    pub(crate) value: u64,
 }
 
-async fn broadcast_btc(
+pub(crate) async fn broadcast_btc(
     state: &AppState,
     seed: &[u8],
     account_index: u32,
@@ -521,7 +527,7 @@ async fn broadcast_btc(
     Ok(resp.text().await.unwrap_or_default().trim().to_string())
 }
 
-async fn fetch_btc_utxos(client: &reqwest::Client, address: &str) -> Result<Vec<BtcUtxo>, AppError> {
+pub(crate) async fn fetch_btc_utxos(client: &reqwest::Client, address: &str) -> Result<Vec<BtcUtxo>, AppError> {
     let url = format!("https://blockstream.info/api/address/{}/utxo", address);
     let resp: serde_json::Value = client
         .get(&url)

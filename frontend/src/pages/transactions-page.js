@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig } from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, listTransactions, getUserProfile } from '../api.js'
+import { upsertUser, listTransactions, listWithdrawals, getUserProfile } from '../api.js'
 import { initChat } from '../chat.js'
 import { avatarPathFromProfile } from '../avatar.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
@@ -53,8 +53,49 @@ onAuthChange(async (user) => {
   ensureDevBalanceTools()
   void refreshNavCombinedBalance()
 
-  await loadTransactions()
+  await Promise.all([loadPendingWithdrawals(), loadTransactions()])
 })
+
+const WITHDRAWAL_STATUS_META = {
+  queued:    { label: 'Queued',    color: 'var(--warn, #eab308)' },
+  completed: { label: 'Completed', color: 'var(--success)' },
+  failed:    { label: 'Failed',    color: 'var(--danger)' },
+}
+
+async function loadPendingWithdrawals() {
+  const section = document.getElementById('pending-withdrawals-section')
+  const list = document.getElementById('pending-withdrawals-list')
+  if (!section || !list) return
+
+  try {
+    const withdrawals = await listWithdrawals()
+    const pending = withdrawals.filter(w => w.status === 'queued' || w.status === 'failed')
+    if (!pending.length) {
+      section.style.display = 'none'
+      return
+    }
+
+    section.style.display = ''
+    list.innerHTML = pending.map((w) => {
+      const meta = WITHDRAWAL_STATUS_META[w.status] || { label: w.status, color: 'var(--muted)' }
+      const when = w.created_at ? new Date(w.created_at * 1000).toLocaleString() : '—'
+      return `
+        <div style="display:flex;align-items:center;gap:0.85rem;padding:0.85rem 0;border-bottom:1px solid var(--border);">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;">
+              ${Number(w.amount).toFixed(8)} ${escHtml(w.coin.toUpperCase())} to
+              <code style="font-size:0.82em;word-break:break-all;">${escHtml(w.to_address)}</code>
+            </div>
+            <div class="muted" style="font-size:0.78rem;margin-top:0.15rem;">${escHtml(when)}</div>
+            ${w.status === 'failed' && w.error ? `<div style="font-size:0.8rem;color:var(--danger);margin-top:0.25rem;">${escHtml(w.error)}</div>` : ''}
+          </div>
+          <div style="font-weight:700;color:${meta.color};white-space:nowrap;">${meta.label}</div>
+        </div>`
+    }).join('')
+  } catch {
+    section.style.display = 'none'
+  }
+}
 
 async function resolveUsername(uid) {
   if (!uid) return null

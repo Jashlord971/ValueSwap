@@ -2,11 +2,12 @@
 import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
-import { upsertUser, updateMyProfile, setWithdrawCode } from '../api.js'
+import { upsertUser, updateMyProfile, setup2fa, confirm2fa, disable2fa } from '../api.js'
 import { initChat } from '../chat.js'
 import { MIN_AVATAR_NUMBER, MAX_AVATAR_NUMBER, normalizeAvatarNumber, avatarPathFromNumber, avatarPathFromProfile } from '../avatar.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
+import { runTotpGatedAction } from '../two-factor.js'
 
 const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
@@ -95,6 +96,14 @@ function renderViewMode() {
   setText('view-username',   p.username   ? `@${p.username}` : '—')
   setText('view-email',      p.email      || '—')
   setText('view-country',    p.country    || '—')
+  setText('view-detected-country', p.detected_country || 'Not detected yet')
+  setText('view-ip-address', p.last_ip || '—')
+  const detectedCountryEl = document.getElementById('view-detected-country')
+  if (detectedCountryEl) {
+    detectedCountryEl.title = p.location_updated_at
+      ? `Detected from your IP address on ${new Date(p.location_updated_at * 1000).toLocaleString()} — not editable.`
+      : 'Detected automatically from your IP address — not editable.'
+  }
   const avatarNumber = normalizeAvatarNumber(p.avatar_number, DEFAULT_AVATAR_NUMBER)
   renderAvatar('view-avatar-img', 'view-avatar-initials', avatarNumber, p.first_name, p.username)
 }
@@ -247,101 +256,161 @@ function renderTradeSettings() {
   const p = currentProfile || {}
 
   const releaseToggle = document.getElementById('toggle-release-code')
-  if (releaseToggle) releaseToggle.checked = !!p.require_release_code
-
-  const withdrawToggle = document.getElementById('toggle-withdraw-code')
-  if (withdrawToggle) withdrawToggle.checked = !!p.withdraw_code_required
-
-  updateWithdrawCodeStatus(!!p.withdraw_code_hash)
-}
-
-function updateWithdrawCodeStatus(hasCode) {
-  const el = document.getElementById('withdraw-code-status')
-  if (!el) return
-  el.textContent = hasCode
-    ? 'A confirmation code is set. Enter a new code below to change it, or click Remove Code to clear it.'
-    : 'No confirmation code is set. Set one below to enable code-protected actions.'
-
-  const removeBtn = document.getElementById('btn-remove-withdraw-code')
-  if (removeBtn) removeBtn.classList.toggle('hidden', !hasCode)
-}
-
-function bindTradeSettings() {
-
-  const releaseToggle = document.getElementById('toggle-release-code')
   if (releaseToggle) {
-    releaseToggle.addEventListener('change', async () => {
-      const enabled = releaseToggle.checked
-      try {
-        const updated = await updateMyProfile({ require_release_code: enabled })
-        currentProfile = updated
-        showToast(enabled ? 'Release code enabled.' : 'Release code disabled.')
-      } catch (e) {
-        releaseToggle.checked = !enabled
-        showToast('Failed to save: ' + e.message, 'error')
-      }
-    })
+    releaseToggle.checked = !!p.require_release_code
+    // Nothing to enable without 2FA set up first — and if 2FA is off the
+    // backend guarantees this is already off too, so there's nothing to
+    // turn off either.
+    releaseToggle.disabled = !p.totp_enabled
+    releaseToggle.closest('.toggle-switch')?.setAttribute(
+      'title', p.totp_enabled ? '' : 'Set up 2FA below first'
+    )
   }
 
   const withdrawToggle = document.getElementById('toggle-withdraw-code')
   if (withdrawToggle) {
-    withdrawToggle.addEventListener('change', async () => {
-      const enabled = withdrawToggle.checked
+    withdrawToggle.checked = !!p.withdraw_code_required
+    withdrawToggle.disabled = !p.totp_enabled
+    withdrawToggle.closest('.toggle-switch')?.setAttribute(
+      'title', p.totp_enabled ? '' : 'Set up 2FA below first'
+    )
+  }
+
+  renderTwoFactorStatus()
+}
+
+function renderTwoFactorStatus() {
+  const p = currentProfile || {}
+  const statusEl = document.getElementById('twofa-status')
+  const setupBlock = document.getElementById('twofa-setup-block')
+  const disableBlock = document.getElementById('twofa-disable-block')
+  const detailsBlock = document.getElementById('twofa-setup-details')
+  if (!statusEl) return
+
+  statusEl.textContent = p.totp_enabled
+    ? '2FA is enabled on your account.'
+    : 'Not set up yet.'
+
+  setupBlock?.classList.toggle('hidden', !!p.totp_enabled)
+  disableBlock?.classList.toggle('hidden', !p.totp_enabled)
+  detailsBlock?.classList.add('hidden')
+}
+
+// Wires a trade-setting toggle that (a) can only be turned on once 2FA is
+// set up (backend-enforced too — this is just so it fails before a request
+// round-trip) and (b) requires a fresh 2FA code to turn back off, same as
+// disabling 2FA itself does — so a hijacked session alone can't silently
+// strip the protection.
+function bindGatedToggle(toggleId, fieldName, { onLabel, offLabel, actionLabel }) {
+  const toggle = document.getElementById(toggleId)
+  if (!toggle) return
+
+  toggle.addEventListener('change', async () => {
+    const enabled = toggle.checked
+
+    if (!enabled && currentProfile?.totp_enabled) {
+      const { result, cancelled, error } = await runTotpGatedAction(
+        actionLabel, (code) => updateMyProfile({ [fieldName]: false, totp_code: code })
+      )
+      if (cancelled) { toggle.checked = true; return }
+      if (error) { toggle.checked = true; showToast('Failed to save: ' + error.message, 'error'); return }
+      currentProfile = result
+      showToast(offLabel)
+      return
+    }
+
+    try {
+      const updated = await updateMyProfile({ [fieldName]: enabled })
+      currentProfile = updated
+      showToast(enabled ? onLabel : offLabel)
+    } catch (e) {
+      toggle.checked = !enabled
+      showToast('Failed to save: ' + e.message, 'error')
+    }
+  })
+}
+
+function bindTradeSettings() {
+  bindGatedToggle('toggle-release-code', 'require_release_code', {
+    onLabel: 'Release code enabled.',
+    offLabel: 'Release code disabled.',
+    actionLabel: 'disable the release code requirement',
+  })
+  bindGatedToggle('toggle-withdraw-code', 'withdraw_code_required', {
+    onLabel: 'Off-chain send code required.',
+    offLabel: 'Off-chain send code requirement removed.',
+    actionLabel: 'disable the off-chain send code requirement',
+  })
+
+  const startBtn = document.getElementById('btn-start-2fa-setup')
+  if (startBtn) {
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true
       try {
-        const updated = await updateMyProfile({ withdraw_code_required: enabled })
-        currentProfile = updated
-        showToast(enabled ? 'Off-chain send code required.' : 'Off-chain send code requirement removed.')
+        const res = await setup2fa()
+        document.getElementById('twofa-qr-image').src = res.qr_base64
+        document.getElementById('twofa-manual-secret').textContent = res.secret
+        document.getElementById('input-2fa-confirm-code').value = ''
+        document.getElementById('twofa-setup-error').textContent = ''
+        document.getElementById('twofa-setup-details').classList.remove('hidden')
       } catch (e) {
-        withdrawToggle.checked = !enabled
-        showToast('Failed to save: ' + e.message, 'error')
+        showToast('Failed to start 2FA setup: ' + e.message, 'error')
+      } finally {
+        startBtn.disabled = false
       }
     })
   }
 
-  const saveCodeBtn = document.getElementById('btn-save-withdraw-code')
-  if (saveCodeBtn) {
-    saveCodeBtn.addEventListener('click', async () => {
-      const codeInput    = document.getElementById('input-withdraw-code')
-      const confirmInput = document.getElementById('input-withdraw-code-confirm')
-      const errEl        = document.getElementById('withdraw-code-error')
-      errEl.textContent  = ''
+  const cancelSetupBtn = document.getElementById('btn-cancel-2fa-setup')
+  if (cancelSetupBtn) {
+    cancelSetupBtn.addEventListener('click', () => {
+      document.getElementById('twofa-setup-details').classList.add('hidden')
+    })
+  }
 
-      const code    = codeInput.value.trim()
-      const confirm = confirmInput.value.trim()
+  const confirmBtn = document.getElementById('btn-confirm-2fa')
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', async () => {
+      const codeInput = document.getElementById('input-2fa-confirm-code')
+      const errEl = document.getElementById('twofa-setup-error')
+      const code = codeInput.value.trim()
+      errEl.textContent = ''
+      if (!/^\d{6}$/.test(code)) { errEl.textContent = 'Enter the 6-digit code.'; return }
 
-      if (!code) { errEl.textContent = 'Please enter a code.'; return }
-      if (!/^\d{4,6}$/.test(code)) { errEl.textContent = 'Code must be 4–6 digits.'; return }
-      if (code !== confirm) { errEl.textContent = 'Codes do not match.'; return }
-
-      saveCodeBtn.disabled = true
+      confirmBtn.disabled = true
       try {
-        const updated = await setWithdrawCode(code)
+        const updated = await confirm2fa(code)
+        currentProfile = updated
+        renderTradeSettings()
+        showToast('2FA enabled.')
+      } catch (e) {
+        errEl.textContent = e.message
+      } finally {
+        confirmBtn.disabled = false
+      }
+    })
+  }
+
+  const disableBtn = document.getElementById('btn-disable-2fa')
+  if (disableBtn) {
+    disableBtn.addEventListener('click', async () => {
+      const codeInput = document.getElementById('input-2fa-disable-code')
+      const errEl = document.getElementById('twofa-disable-error')
+      const code = codeInput.value.trim()
+      errEl.textContent = ''
+      if (!/^\d{6}$/.test(code)) { errEl.textContent = 'Enter the 6-digit code.'; return }
+
+      disableBtn.disabled = true
+      try {
+        const updated = await disable2fa(code)
         currentProfile = updated
         codeInput.value = ''
-        confirmInput.value = ''
-        updateWithdrawCodeStatus(true)
-        showToast('Confirmation code saved.')
+        renderTradeSettings()
+        showToast('2FA disabled. Release/send code requirements were turned off too.')
       } catch (e) {
-        errEl.textContent = 'Failed to save: ' + e.message
+        errEl.textContent = e.message
       } finally {
-        saveCodeBtn.disabled = false
-      }
-    })
-  }
-
-  const removeCodeBtn = document.getElementById('btn-remove-withdraw-code')
-  if (removeCodeBtn) {
-    removeCodeBtn.addEventListener('click', async () => {
-      removeCodeBtn.disabled = true
-      try {
-        const updated = await setWithdrawCode('')
-        currentProfile = updated
-        updateWithdrawCodeStatus(false)
-        showToast('Confirmation code removed.')
-      } catch (e) {
-        showToast('Failed to remove: ' + e.message, 'error')
-      } finally {
-        removeCodeBtn.disabled = false
+        disableBtn.disabled = false
       }
     })
   }

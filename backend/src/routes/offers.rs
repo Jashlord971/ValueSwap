@@ -501,6 +501,10 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
 
     let terms = sanitize_terms(&req.terms)?;
 
+    crate::rate_limit::check_rate_limit(
+        state, &format!("offer-create:{}", user.uid), 5, 600, "creating offers",
+    ).await?;
+
     let db = RtdbClient::new(&state, &user.id_token);
     ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &req.offer_type, None).await?;
 
@@ -553,6 +557,7 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
     };
 
     db.set(&format!("offers/{}", offer.id), &serde_json::to_value(&offer).unwrap()).await?;
+    state.ttl_cache.invalidate("offers-collection").await;
 
     Ok(Json(offer))
 }
@@ -562,12 +567,24 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
     let user = &ctx.user;
     let is_market = query.market.unwrap_or(false);
     let db = RtdbClient::new(&state, &user.id_token);
-    let docs = db.get_collection("offers").await?;
 
-    let mut offers: Vec<Offer> = docs
-        .into_iter()
-        .filter_map(|v| serde_json::from_value::<Offer>(v).ok())
-        .collect();
+    // The raw collection is the same for every caller (market browsing and
+    // "my offers" both start from it) — cache the fetch itself rather than
+    // per-user, so a busy market page benefits everyone, not just repeat
+    // requests from the same user. Short TTL since market mode below can
+    // write back auto-adjusted offers and we don't want that lagging long.
+    const OFFERS_CACHE_KEY: &str = "offers-collection";
+    let mut offers: Vec<Offer> = if let Some(cached) = state.ttl_cache.get::<Vec<Offer>>(OFFERS_CACHE_KEY).await {
+        cached
+    } else {
+        let docs = db.get_collection("offers").await?;
+        let fresh: Vec<Offer> = docs
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<Offer>(v).ok())
+            .collect();
+        state.ttl_cache.set(OFFERS_CACHE_KEY, &fresh, 10).await;
+        fresh
+    };
 
     if is_market {
         let my_profile = db
@@ -892,6 +909,7 @@ async fn toggle_offer_status(ctx: Ctx, Path(id): Path<String>, Json(req): Json<U
         &serde_json::to_value(&offer).unwrap(),
     )
     .await?;
+    state.ttl_cache.invalidate("offers-collection").await;
 
     Ok(Json(offer))
 }
@@ -917,6 +935,10 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
             "Offer type cannot be changed after creation".into(),
         ));
     }
+
+    crate::rate_limit::check_rate_limit(
+        state, &format!("offer-edit:{}", user.uid), 10, 600, "editing offers",
+    ).await?;
 
     let pms = payment_methods();
     let pm = resolve_payment_method(&req.card, &pms)?;
@@ -975,6 +997,7 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
 
     db.set(&format!("offers/{}", id), &serde_json::to_value(&offer).unwrap())
     .await?;
+    state.ttl_cache.invalidate("offers-collection").await;
 
     Ok(Json(offer))
 }
@@ -996,6 +1019,7 @@ async fn delete_offer(ctx: Ctx, Path(id): Path<String>) -> Result<StatusCode, Ap
     }
 
     db.delete(&format!("offers/{}", id)).await?;
+    state.ttl_cache.invalidate("offers-collection").await;
 
     Ok(StatusCode::NO_CONTENT)
 }

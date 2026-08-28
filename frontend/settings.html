@@ -52,6 +52,14 @@
               <span class="profile-item-label">Country of Residence</span>
               <span class="profile-item-value" id="view-country">—</span>
             </div>
+            <div class="profile-item">
+              <span class="profile-item-label">Detected Country</span>
+              <span class="profile-item-value muted" id="view-detected-country" title="Detected automatically from your IP address — not editable.">—</span>
+            </div>
+            <div class="profile-item">
+              <span class="profile-item-label">IP Address</span>
+              <span class="profile-item-value muted" id="view-ip-address">—</span>
+            </div>
           </div>
         </div>
       </div>
@@ -121,7 +129,7 @@
       <div class="trade-setting-row">
         <div class="trade-setting-info">
           <span class="trade-setting-label">Require code before releasing</span>
-          <span class="trade-setting-desc">When enabled, a confirmation code must be shown in chat before escrow funds can be released.</span>
+          <span class="trade-setting-desc">When enabled, you must enter your 2FA code before escrow funds can be released.</span>
         </div>
         <label class="toggle-switch" aria-label="Require release code">
           <input type="checkbox" id="toggle-release-code" />
@@ -134,43 +142,57 @@
       <div class="trade-setting-row">
         <div class="trade-setting-info">
           <span class="trade-setting-label">Require code for off-chain sends</span>
-          <span class="trade-setting-desc">When enabled, you must enter your confirmation code before sending crypto to another platform user. Adds an extra layer of protection against unauthorised transfers.</span>
+          <span class="trade-setting-desc">When enabled, you must enter your 2FA code before sending crypto to another platform user or withdrawing on-chain. Adds an extra layer of protection against unauthorised transfers.</span>
         </div>
         <label class="toggle-switch" aria-label="Require code for off-chain sends">
           <input type="checkbox" id="toggle-withdraw-code" />
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
         </label>
       </div>
+      <p class="muted" style="font-size:0.8rem;margin-top:0.75rem">
+        Both settings require 2-Factor Authentication to be set up below first.
+      </p>
     </section>
 
     <section class="section card settings-card" style="margin-top:1rem">
       <div class="settings-card-header">
-        <h2>Confirmation Code</h2>
+        <h2>Two-Factor Authentication</h2>
       </div>
       <p class="muted" style="margin:.25rem 0 1rem">
-        A 4–6 digit code used to authorise sensitive actions (e.g. off-chain sends).
-        Set a code below to enable this protection.
+        Use Google Authenticator (or any TOTP app) to generate the codes used by the trade
+        settings above.
       </p>
-      <p id="withdraw-code-status" class="muted" style="font-size:0.85rem;margin-bottom:1rem"></p>
-      <div class="field-row" style="max-width:260px">
-        <label class="form-label" for="input-withdraw-code">
-          New code
-          <span class="field-hint">(4–6 digits)</span>
-        </label>
-        <input id="input-withdraw-code" class="form-input" type="password"
-               inputmode="numeric" maxlength="6" placeholder="e.g. 4821"
-               autocomplete="one-time-code" />
+      <p id="twofa-status" class="muted" style="font-size:0.85rem;margin-bottom:1rem"></p>
+
+      <div id="twofa-setup-block">
+        <button id="btn-start-2fa-setup" class="btn-primary">Set Up 2FA</button>
       </div>
-      <div class="field-row" style="max-width:260px;margin-top:.5rem">
-        <label class="form-label" for="input-withdraw-code-confirm">Confirm code</label>
-        <input id="input-withdraw-code-confirm" class="form-input" type="password"
-               inputmode="numeric" maxlength="6" placeholder="repeat code"
-               autocomplete="one-time-code" />
+
+      <div id="twofa-setup-details" class="hidden" style="margin-top:1rem">
+        <p class="muted" style="font-size:0.85rem">Scan this QR code with your authenticator app:</p>
+        <img id="twofa-qr-image" alt="2FA QR code" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px;margin:0.5rem 0;display:block;" />
+        <p class="muted" style="font-size:0.8rem">Or enter this code manually:</p>
+        <code id="twofa-manual-secret" style="display:block;word-break:break-all;padding:0.5rem;background:var(--bg);border-radius:6px;margin-bottom:0.75rem;"></code>
+        <div class="field-row" style="max-width:220px">
+          <label class="form-label" for="input-2fa-confirm-code">Enter the 6-digit code to confirm</label>
+          <input id="input-2fa-confirm-code" class="form-input" inputmode="numeric" maxlength="6"
+                 placeholder="123456" autocomplete="one-time-code" />
+        </div>
+        <p id="twofa-setup-error" class="error" style="font-size:0.85rem;margin-top:.25rem"></p>
+        <div style="display:flex;gap:.75rem;margin-top:.75rem;">
+          <button id="btn-confirm-2fa" class="btn-primary">Enable 2FA</button>
+          <button id="btn-cancel-2fa-setup" class="btn">Cancel</button>
+        </div>
       </div>
-      <p id="withdraw-code-error" class="error" style="font-size:0.85rem;margin-top:.25rem"></p>
-      <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
-        <button id="btn-save-withdraw-code" class="btn-primary">Save Code</button>
-        <button id="btn-remove-withdraw-code" class="btn-danger hidden">Remove Code</button>
+
+      <div id="twofa-disable-block" class="hidden" style="margin-top:1rem">
+        <div class="field-row" style="max-width:220px">
+          <label class="form-label" for="input-2fa-disable-code">Enter your current 6-digit code to disable</label>
+          <input id="input-2fa-disable-code" class="form-input" inputmode="numeric" maxlength="6"
+                 placeholder="123456" autocomplete="one-time-code" />
+        </div>
+        <p id="twofa-disable-error" class="error" style="font-size:0.85rem;margin-top:.25rem"></p>
+        <button id="btn-disable-2fa" class="btn-danger" style="margin-top:.5rem">Disable 2FA</button>
       </div>
     </section>
 

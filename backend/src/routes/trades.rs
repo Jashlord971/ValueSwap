@@ -1,8 +1,8 @@
 ﻿use crate::auth::Ctx;
 use crate::error::AppError;
 use crate::firebase::RtdbClient;
-use crate::models::{CreateTradeRequest, DisputeTradeRequest, LeaveTradeFeedbackRequest, Offer, Trade, TradeFeedback, TradeStatus, UserProfile};
-use crate::moderation::is_moderator_email;
+use crate::models::{CompleteTradeRequest, CreateTradeRequest, DisputeTradeRequest, LeaveTradeFeedbackRequest, Offer, Trade, TradeFeedback, TradeStatus, UserProfile};
+use crate::moderation::is_moderator_email_cached;
 use crate::AppState;
 use axum::{
     extract::Path,
@@ -61,7 +61,7 @@ async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
     // One fetch of the whole users collection instead of 2 round-trips per
     // trade (resolve_trade_usernames) — with N trades that was N+1-style
     // sequential Firebase calls and was the main reason this list was slow.
-    let users_map = fetch_users_meta_map(&db).await;
+    let users_map = fetch_users_meta_map(&ctx.state).await;
     for trade in &mut trades {
         apply_trade_usernames_from_map(trade, &users_map);
     }
@@ -92,6 +92,8 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
     if offer.status != crate::models::OfferStatus::Active {
         return Err(AppError::BadRequest("Offer is no longer active. Refresh offers and try again.".into()));
     }
+
+    enforce_active_trade_caps(&db, &ctx.user.uid, &offer.creator_uid).await?;
 
     let requested_coin = req.coin.trim().to_uppercase();
     let offer_coin = offer.coin.trim().to_uppercase();
@@ -207,20 +209,20 @@ async fn get_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
     if !is_party {
 
         let is_disputed = matches!(trade.status, TradeStatus::Disputed);
-        if !is_disputed || !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+        if !is_disputed || !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
             return Err(AppError::Forbidden("Not a party to this trade".into()));
         }
     }
     if apply_effective_trade_status(&mut trade) {
         db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     }
-    resolve_trade_usernames(&mut trade, &db).await;
+    resolve_trade_usernames(&mut trade, &ctx.state).await;
     Ok(Json(trade))
 }
 
 async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
-    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+    if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
 
@@ -233,7 +235,7 @@ async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
 
     trades.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
-    let users_map = fetch_users_meta_map(&db).await;
+    let users_map = fetch_users_meta_map(&ctx.state).await;
     for trade in &mut trades {
         apply_trade_usernames_from_map(trade, &users_map);
     }
@@ -241,7 +243,7 @@ async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
     Ok(Json(trades))
 }
 
-async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppError> {
+async fn complete_trade(ctx: Ctx, Path(id): Path<String>, Json(req): Json<CompleteTradeRequest>) -> Result<Json<Trade>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let val = db
         .get(&format!("trades/{}", id))
@@ -262,6 +264,16 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>,
     if trade.creator_uid == trade.offer_owner_uid {
         return Err(AppError::BadRequest("Invalid trade participants".into()));
     }
+
+    let releaser_profile = fetch_user_profile(&db, &ctx.user.uid).await?;
+    super::twofa::require_valid_totp_if_gated(
+        &ctx.state,
+        ctx.user.email.as_deref(),
+        &ctx.user.uid,
+        releaser_profile.require_release_code,
+        &releaser_profile,
+        req.totp_code.as_deref(),
+    ).await?;
     if !trade.escrow_locked_amount.is_finite() || trade.escrow_locked_amount <= 0.0 {
         return Err(AppError::BadRequest("Invalid escrow amount for completion".into()));
     }
@@ -438,6 +450,11 @@ async fn mark_paid(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
 
     trade.status = TradeStatus::Paid;
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+
+    if let Err(e) = super::chat::insert_payment_verifying_notice(&db, &id, &ctx.user.uid).await {
+        tracing::warn!("Failed to post payment-verifying notice to chat for trade {}: {}", id, e);
+    }
+
     Ok(Json(trade))
 }
 
@@ -519,7 +536,7 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
         db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     }
 
-    if !is_moderator_email(&db, ctx.user.email.as_deref()).await? {
+    if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
     if !matches!(trade.status, TradeStatus::Disputed) {
@@ -560,6 +577,11 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
     trade.dispute_resolved_at = Some(unix_now());
     trade.dispute_resolved_by_uid = Some(ctx.user.uid.clone());
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
+
+    if let Err(e) = super::chat::insert_dispute_resolved_notice(&db, &id, &ctx.user.uid).await {
+        tracing::warn!("Failed to post dispute-resolved notice to chat for trade {}: {}", id, e);
+    }
+
     Ok(Json(trade))
 }
 
@@ -616,7 +638,7 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
 
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
     apply_feedback_delta(&db, &to_uid, req.positive, 1).await?;
-    resolve_trade_usernames(&mut trade, &db).await;
+    resolve_trade_usernames(&mut trade, &ctx.state).await;
     Ok(Json(trade))
 }
 
@@ -668,7 +690,7 @@ async fn edit_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTr
     }
 
     db.set(&format!("trades/{}", id), &serde_json::to_value(&trade).unwrap()).await?;
-    resolve_trade_usernames(&mut trade, &db).await;
+    resolve_trade_usernames(&mut trade, &ctx.state).await;
     Ok(Json(trade))
 }
 
@@ -873,6 +895,55 @@ async fn ensure_escrow_available_for_completion(db: &RtdbClient<'_>, seller_uid:
     Ok(())
 }
 
+async fn fetch_user_profile(db: &RtdbClient<'_>, uid: &str) -> Result<UserProfile, AppError> {
+    let val = db
+        .get(&format!("users/{}", uid))
+        .await?
+        .ok_or_else(|| AppError::NotFound("User profile not found".into()))?;
+    serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+// Caps how much capital a single user (or a single pair of users) can have
+// locked in escrow at once — mainly to limit malicious/careless coin-locking
+// (opening many trades to tie up sellers' balances) rather than payment
+// throughput, which real trading volume rarely approaches anyway.
+const MAX_ACTIVE_TRADES_PER_USER: usize = 8;
+const MAX_ACTIVE_TRADES_PER_PAIR: usize = 3;
+
+fn is_active_trade_status(status: &TradeStatus) -> bool {
+    matches!(status, TradeStatus::Open | TradeStatus::Pending | TradeStatus::Paid | TradeStatus::Disputed)
+}
+
+async fn enforce_active_trade_caps(db: &RtdbClient<'_>, uid: &str, counterparty_uid: &str) -> Result<(), AppError> {
+    let docs = db.get_collection("trades").await?;
+    let trades: Vec<Trade> = docs.into_iter().filter_map(|v| serde_json::from_value::<Trade>(v).ok()).collect();
+
+    let active_for_user = trades.iter()
+        .filter(|t| is_active_trade_status(&t.status) && (t.creator_uid == uid || t.offer_owner_uid == uid))
+        .count();
+    if active_for_user >= MAX_ACTIVE_TRADES_PER_USER {
+        return Err(AppError::BadRequest(format!(
+            "You already have {} active trades — the limit is {}. Complete or cancel one before starting another.",
+            active_for_user, MAX_ACTIVE_TRADES_PER_USER
+        )));
+    }
+
+    let active_with_counterparty = trades.iter()
+        .filter(|t| is_active_trade_status(&t.status) && (
+            (t.creator_uid == uid && t.offer_owner_uid == counterparty_uid) ||
+            (t.offer_owner_uid == uid && t.creator_uid == counterparty_uid)
+        ))
+        .count();
+    if active_with_counterparty >= MAX_ACTIVE_TRADES_PER_PAIR {
+        return Err(AppError::BadRequest(format!(
+            "You already have {} active trades with this trader — the limit is {} at a time.",
+            active_with_counterparty, MAX_ACTIVE_TRADES_PER_PAIR
+        )));
+    }
+
+    Ok(())
+}
+
 pub(crate) fn unix_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -916,17 +987,25 @@ fn user_meta_from_value(v: &serde_json::Value) -> UserMeta {
     (username, avatar_number, last_active_at)
 }
 
-// One fetch of the whole users collection instead of 2 round-trips per trade
-// (see resolve_trade_usernames below) — with N trades that was N+1-style
-// sequential Firebase calls and was the main reason list_trades/list_disputes
-// were slow to load.
-async fn fetch_users_meta_map(db: &RtdbClient<'_>) -> HashMap<String, UserMeta> {
+async fn fetch_users_meta_map(state: &AppState) -> HashMap<String, UserMeta> {
+    const CACHE_KEY: &str = "users-meta-map";
+    if let Some(cached) = state.ttl_cache.get::<HashMap<String, UserMeta>>(CACHE_KEY).await {
+        return cached;
+    }
+
+    // Admin-scoped: RTDB rules typically restrict users/$uid reads to that
+    // user themselves, which would silently deny a whole-collection read
+    // (or a counterparty's single node) under a normal user token — and
+    // every caller here just wants the public username/avatar/last-seen
+    // fields to label a trade counterparty, not anything sensitive.
+    let admin_db = RtdbClient::new_admin(state);
     let mut map = HashMap::new();
-    if let Ok(Some(serde_json::Value::Object(users))) = db.get("users").await {
+    if let Ok(Some(serde_json::Value::Object(users))) = admin_db.get("users").await {
         for (uid, v) in users {
             map.insert(uid, user_meta_from_value(&v));
         }
     }
+    state.ttl_cache.set(CACHE_KEY, &map, 30).await;
     map
 }
 
@@ -948,35 +1027,22 @@ fn apply_trade_usernames_from_map(trade: &mut Trade, map: &HashMap<String, UserM
     trade.offer_owner_last_active_at = offer_owner_last_active_at;
 }
 
-async fn resolve_trade_usernames(trade: &mut Trade, db: &RtdbClient<'_>) {
-    async fn fetch_user_meta(db: &RtdbClient<'_>, uid: &str) -> (Option<String>, Option<u8>, Option<u64>) {
+async fn resolve_trade_usernames(trade: &mut Trade, state: &AppState) {
+    // Admin-scoped for the same reason as fetch_users_meta_map above: a
+    // trade party reading the *other* party's users/$uid node under their
+    // own user token is routinely denied by RTDB rules, which silently
+    // resolved to "no username" everywhere this was called from.
+    let admin_db = RtdbClient::new_admin(state);
+
+    async fn fetch_user_meta(db: &RtdbClient<'_>, uid: &str) -> UserMeta {
         let Some(v) = db.get(&format!("users/{}", uid)).await.ok().flatten() else {
             return (None, None, None);
         };
-
-        let username = v
-            .get("username")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned);
-
-        let avatar_number = v
-            .get("avatar_number")
-            .and_then(|x| x.as_u64())
-            .and_then(|n| u8::try_from(n).ok())
-            .filter(|n| (1..=21).contains(n));
-
-        let last_active_at = v
-            .get("last_active_at")
-            .and_then(|x| x.as_u64())
-            .filter(|ts| *ts > 0);
-
-        (username, avatar_number, last_active_at)
+        user_meta_from_value(&v)
     }
 
-    let (creator_username, creator_avatar_number, creator_last_active_at) = fetch_user_meta(db, &trade.creator_uid).await;
-    let (offer_owner_username, offer_owner_avatar_number, offer_owner_last_active_at) = fetch_user_meta(db, &trade.offer_owner_uid).await;
+    let (creator_username, creator_avatar_number, creator_last_active_at) = fetch_user_meta(&admin_db, &trade.creator_uid).await;
+    let (offer_owner_username, offer_owner_avatar_number, offer_owner_last_active_at) = fetch_user_meta(&admin_db, &trade.offer_owner_uid).await;
 
     trade.creator_username = creator_username;
     trade.creator_avatar_number = creator_avatar_number;

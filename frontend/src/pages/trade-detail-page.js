@@ -3,17 +3,19 @@ import { initializeApp } from 'firebase/app'
 import { firebaseConfig }  from '../firebase-config.js'
 import { initAuth, onAuthChange, logOut } from '../auth.js'
 import { upsertUser, getTrade, completeTrade, cancelTrade, markTradePaid, disputeTrade, leaveTradeFeedback, editTradeFeedback, listPaymentMethods, resolveDispute, warnUser, banUser } from '../api.js'
-import { showAlert, showConfirm, showFeedbackModal, showDisputeModal } from '../modal.js'
+import { showAlert, showConfirm, showFeedbackModal, showDisputeModal, showPromptModal } from '../modal.js'
 import { initChat } from '../chat.js'
-import { avatarPathFromProfile, avatarPathFromNumber } from '../avatar.js'
+import { avatarPathFromProfile, avatarPathFromNumber, profileHref } from '../avatar.js'
 import { getPresenceBadgeState } from '../presence.js'
 import { setupUnreadTradeNotifications } from '../unread-notifications.js'
 import { ensureDevBalanceTools, refreshNavCombinedBalance } from '../dev-balance-tools.js'
+import { runTotpGatedAction } from '../two-factor.js'
 
 const firebaseApp = initializeApp(firebaseConfig)
 initAuth(firebaseApp)
 
 let currentUser = null
+let currentUserProfile = null
 let currentTrade = null
 let usdPrices = null
 let statusCountdownTimer = null
@@ -117,6 +119,7 @@ onAuthChange(async (user) => {
 
   let profile
   try { profile = await upsertUser() } catch { profile = { email: user.email } }
+  currentUserProfile = profile
 
   const navAuth = document.getElementById('nav-auth')
   const label   = profile?.username ? `@${profile.username}` : user.email
@@ -195,6 +198,9 @@ async function displayTrade() {
   const partnerPresence = getPresenceBadgeState(partnerLastActiveAt)
   const partnerAvatarPath = avatarPathFromNumber(partnerAvatarNumber)
   const partnerDisplay = partnerName || (partnerUid ? partnerUid.slice(0, 8) + '…' : '—')
+  const partnerHref = profileHref(partnerName)
+  const avatarTag = partnerHref ? 'a' : 'span'
+  const nameTag   = partnerHref ? 'a' : 'span'
 
   const currency   = t.currency || ''
   const coin       = t.coin || ''
@@ -234,11 +240,11 @@ async function displayTrade() {
   const card = `
     <div style="display: flex; flex-direction: column; gap: 1.25rem;">
       <div style="display: flex; align-items: center; gap: 0.8rem;">
-        <span class="trade-detail-avatar-wrap avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
+        <${avatarTag} ${partnerHref ? `href="${escHtml(partnerHref)}"` : ''} class="trade-detail-avatar-wrap avatar-presence-wrap" title="${escHtml(partnerPresence.label)}">
           <img src="${escHtml(partnerAvatarPath)}" alt="" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; box-shadow: 0 2px 8px rgba(0,0,0,0.15);" />
           <span class="avatar-presence-badge presence-${escHtml(partnerPresence.state)}" aria-hidden="true"></span>
-        </span>
-        <p style="font-weight: 600; margin: 0;">${escHtml(partnerDisplay)}</p>
+        </${avatarTag}>
+        <${nameTag} ${partnerHref ? `href="${escHtml(partnerHref)}"` : ''} style="font-weight: 600; margin: 0;${partnerHref ? ' color: inherit; text-decoration: none;' : ''}">${escHtml(partnerDisplay)}</${nameTag}>
       </div>
 
       <p style="font-size: 0.9375rem; margin: 0; padding: 0.75rem 1rem; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); line-height: 1.5;">${summary}</p>
@@ -309,6 +315,10 @@ async function displayModeratorTrade(t) {
   const takerName = t.creator_username || (t.creator_uid ? `${t.creator_uid.slice(0, 8)}…` : '—')
   const offerOwnerAvatar = avatarPathFromNumber(t.offer_owner_avatar_number)
   const takerAvatar = avatarPathFromNumber(t.creator_avatar_number)
+  const offerOwnerHref = profileHref(t.offer_owner_username)
+  const takerHref = profileHref(t.creator_username)
+  const offerOwnerTag = offerOwnerHref ? 'a' : 'div'
+  const takerTag = takerHref ? 'a' : 'div'
 
   const currency = t.currency || ''
   const coin = t.coin || ''
@@ -325,21 +335,21 @@ async function displayModeratorTrade(t) {
     <div style="display: flex; flex-direction: column; gap: 1.1rem;">
       <p class="muted" style="margin:0;padding:0.6rem 0.85rem;background:var(--bg);border-radius:8px;border:1px solid var(--border);">You're viewing this trade as a moderator.</p>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-        <div style="display:flex;align-items:center;gap:0.6rem;">
-          <img src="${escHtml(offerOwnerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;" />
-          <div>
+      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+        <${offerOwnerTag} ${offerOwnerHref ? `href="${escHtml(offerOwnerHref)}"` : ''} style="display:flex;align-items:center;gap:0.6rem;min-width:0;${offerOwnerHref ? 'color:inherit;text-decoration:none;' : ''}">
+          <img src="${escHtml(offerOwnerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;flex-shrink:0;" />
+          <div style="min-width:0;">
             <span style="color:var(--muted);font-size:0.78rem;display:block;">Offer Owner</span>
-            <strong>${escHtml(offerOwnerName)}</strong>
+            <strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(offerOwnerName)}">${escHtml(offerOwnerName)}</strong>
           </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:0.6rem;">
-          <img src="${escHtml(takerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;" />
-          <div>
+        </${offerOwnerTag}>
+        <${takerTag} ${takerHref ? `href="${escHtml(takerHref)}"` : ''} style="display:flex;align-items:center;gap:0.6rem;min-width:0;${takerHref ? 'color:inherit;text-decoration:none;' : ''}">
+          <img src="${escHtml(takerAvatar)}" alt="" style="width:38px;height:38px;border-radius:50%;object-fit:cover;flex-shrink:0;" />
+          <div style="min-width:0;">
             <span style="color:var(--muted);font-size:0.78rem;display:block;">Taker</span>
-            <strong>${escHtml(takerName)}</strong>
+            <strong style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(takerName)}">${escHtml(takerName)}</strong>
           </div>
-        </div>
+        </${takerTag}>
       </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
@@ -662,11 +672,21 @@ function syncTradeChatState(partnerUsername) {
           : 'Your trade counterparty has not marked this trade as paid yet. Are you still sure you want to release and complete this trade?'
         const ok = await showConfirm(confirmMessage)
         if (!ok) return
-        currentTrade = await completeTrade(tradeId)
+
+        if (currentUserProfile?.require_release_code) {
+          const { result, cancelled, error } = await runTotpGatedAction(
+            'release the escrowed funds', (code) => completeTrade(tradeId, code)
+          )
+          if (cancelled) return
+          if (error) throw error
+          currentTrade = result
+        } else {
+          currentTrade = await completeTrade(tradeId)
+        }
       } else if (action === 'cancel') {
         const ok = await showConfirm('Cancel this trade? This cannot be undone.')
         if (!ok) return
-        const reason = await promptReason('Reason for cancellation (optional):')
+        const reason = await showPromptModal('Reason for cancellation (optional):', { title: 'Cancel Trade' })
         currentTrade = await cancelTrade(tradeId, reason || undefined)
       } else if (action === 'dispute') {
         const result = await showDisputeModal()
@@ -678,27 +698,6 @@ function syncTradeChatState(partnerUsername) {
     } catch (e) {
       await showAlert(`Action failed: ${e.message}`)
     }
-  }
-
-  async function promptReason(message) {
-    return new Promise(resolve => {
-      const overlay = document.createElement('div')
-      overlay.className = 'modal-overlay'
-      overlay.innerHTML = `
-        <div class="modal-box" style="max-width:420px;">
-          <p style="margin-bottom:0.75rem;">${escHtml(message)}</p>
-          <textarea id="modal-reason-input" rows="3" style="width:100%;resize:vertical;padding:0.5rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-family:inherit;font-size:0.95rem;"></textarea>
-          <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:0.75rem;">
-            <button class="btn" id="modal-reason-skip">Skip</button>
-            <button class="btn" id="modal-reason-ok">OK</button>
-          </div>
-        </div>
-      `
-      document.body.appendChild(overlay)
-      const input = overlay.querySelector('#modal-reason-input')
-      overlay.querySelector('#modal-reason-ok').addEventListener('click', () => { overlay.remove(); resolve(input.value.trim()) })
-      overlay.querySelector('#modal-reason-skip').addEventListener('click', () => { overlay.remove(); resolve('') })
-    })
   }
 
 function escHtml(str) {

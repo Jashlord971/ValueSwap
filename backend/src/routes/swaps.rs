@@ -35,16 +35,26 @@ struct ListSwapsQuery {
     mine: Option<bool>,
 }
 
+const SWAP_OFFERS_CACHE_KEY: &str = "swap-offers-collection";
+
 async fn list_swap_offers(ctx: Ctx, Query(query): Query<ListSwapsQuery>) -> Result<Json<Vec<SwapOffer>>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let mine = query.mine.unwrap_or(false);
 
-    let mut offers = db
-        .get_collection("swap_offers")
-        .await?
-        .into_iter()
-        .filter_map(|v| serde_json::from_value::<SwapOffer>(v).ok())
-        .collect::<Vec<_>>();
+    // Same shared-fetch cache pattern as offers.rs's list_offers — the raw
+    // collection is identical for every caller.
+    let mut offers: Vec<SwapOffer> = if let Some(cached) = ctx.state.ttl_cache.get::<Vec<SwapOffer>>(SWAP_OFFERS_CACHE_KEY).await {
+        cached
+    } else {
+        let fresh: Vec<SwapOffer> = db
+            .get_collection("swap_offers")
+            .await?
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<SwapOffer>(v).ok())
+            .collect();
+        ctx.state.ttl_cache.set(SWAP_OFFERS_CACHE_KEY, &fresh, 10).await;
+        fresh
+    };
 
     for offer in &mut offers {
         if apply_effective_swap_status(offer) {
@@ -68,17 +78,13 @@ async fn list_swap_offers(ctx: Ctx, Query(query): Query<ListSwapsQuery>) -> Resu
     Ok(Json(offers))
 }
 
-/// Heals offers left "Open" with a negligible remaining_amount — from before
-/// the Filled-threshold was widened, or any other stray float drift — so a
-/// dust-sized leftover doesn't linger on the board with a broken-looking
-/// rate/range. Returns true if it changed anything (caller should persist it).
 fn apply_effective_swap_status(offer: &mut SwapOffer) -> bool {
     if matches!(offer.status, SwapOfferStatus::Open | SwapOfferStatus::Paused) && offer.remaining_amount <= 1e-8 {
         offer.remaining_amount = 0.0;
         offer.status = SwapOfferStatus::Filled;
         return true;
     }
-    false
+    false                             
 }
 
 async fn create_swap_offer(ctx: Ctx, Json(req): Json<CreateSwapOfferRequest>) -> Result<Json<SwapOffer>, AppError> {
@@ -211,10 +217,6 @@ async fn accept_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Acc
     let maker_receives = take_to_amount - to_fee;
 
     offer.remaining_amount = (offer.remaining_amount - take_from_amount).max(0.0);
-    // 1e-9 is finer than any of the 4 coins' real precision (8 decimals), so
-    // ordinary float drift from a full/near-full fill could leave a residue
-    // just above that and strand the offer "Open" forever with an
-    // unfillable, near-zero remaining_amount. Snap it to exactly 0 instead.
     if offer.remaining_amount <= 1e-8 {
         offer.remaining_amount = 0.0;
         offer.status = SwapOfferStatus::Filled;
@@ -274,9 +276,6 @@ async fn cancel_swap_offer(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Swap
     Ok(Json(offer))
 }
 
-/// Turn an offer on/off. Funds stay locked in escrow the whole time — pausing
-/// just hides it from the board and blocks new accepts, same as toggling a
-/// P2P Offer's active status.
 async fn toggle_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOfferStatusRequest>) -> Result<Json<SwapOffer>, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let val = db
@@ -352,8 +351,6 @@ async fn update_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Upd
     Ok(Json(offer))
 }
 
-/// Only removes the record — an offer with funds still locked (Open/Paused)
-/// must be cancelled first so escrow is released before it disappears.
 async fn delete_swap_offer(ctx: Ctx, Path(id): Path<String>) -> Result<StatusCode, AppError> {
     let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
     let val = db

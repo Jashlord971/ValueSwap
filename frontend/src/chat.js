@@ -657,39 +657,10 @@ function renderTradeEventCard() {
       </div>`
   }
 
-  if (activeTrade.status === 'paid') {
-    return `
-      <div style="margin-top:1rem;padding:0.95rem 1rem;border-radius:12px;border:1px solid rgba(234,179,8,0.35);background:rgba(234,179,8,0.1);color:#eab308;font-weight:600;">
-        Your partner is verifying the payment and will be with you shortly.
-      </div>`
-  }
-
-  if (activeTrade.status === 'disputed') {
-
-    const raisedAt = Number(activeTrade.dispute_raised_at || 0)
-    const deadlineText = raisedAt > 0
-      ? ` (by ${new Date((raisedAt + 96 * 3600) * 1000).toLocaleString()})`
-      : ''
-    const resolvedNote = activeTrade.dispute_resolved
-      ? `<div style="margin-top:0.75rem;font-weight:700;">This dispute has been resolved by a moderator.</div>`
-      : ''
-    return `
-      <div style="margin-top:1rem;padding:0.95rem 1rem;border-radius:12px;border:1px solid rgba(239,68,68,0.35);background:rgba(239,68,68,0.1);">
-        <div style="color:var(--danger);font-weight:700;">Dispute in progress.</div>
-        <div style="margin-top:0.5rem;color:var(--text);">We will look to resolve the dispute within 96 hours of the claim being made${deadlineText}.</div>
-        <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid rgba(239,68,68,0.25);color:var(--text);">
-          <strong>Both parties: please add evidence</strong> here in the chat to help a moderator resolve this quickly. Good evidence includes:
-          <ul style="margin:0.4rem 0 0 1.1rem;padding:0;">
-            <li>A screen recording of the payment being sent (or not received)</li>
-            <li>Payment receipts or bank/app confirmation screenshots</li>
-            <li>Transaction IDs or reference numbers</li>
-            <li>Timestamps showing when payment was expected vs. sent</li>
-          </ul>
-          <div style="margin-top:0.5rem;font-size:0.85rem;">When attaching evidence, you can choose to show it to the entire chat or keep it visible to the moderator only. Each of you can send up to ${MAX_MESSAGES_AFTER_DISPUTE} messages after a dispute is opened, so make them count.</div>
-        </div>
-        ${resolvedNote}
-      </div>`
-  }
+  // Dispute-raised and dispute-resolved notices are posted as real, timestamped
+  // system chat messages (see insert_dispute_notice / insert_dispute_resolved_notice
+  // on the backend) so they sort correctly among later messages instead of being
+  // pinned here at the end regardless of when they actually happened.
 
   return ''
 }

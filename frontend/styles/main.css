@@ -264,6 +264,30 @@ code {
   border-bottom: 1px solid var(--border);
   font-weight: 700;
   font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.nav-bell-markall {
+  font-weight: 600;
+  font-size: 0.76rem;
+  color: var(--accent, #7dd3fc);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.nav-bell-markall:hover {
+  text-decoration: underline;
+}
+
+.nav-bell-markall:disabled {
+  color: var(--muted);
+  cursor: default;
+  text-decoration: none;
 }
 
 .nav-bell-list {
@@ -1471,7 +1495,10 @@ button:disabled, .btn:disabled, .btn-sm:disabled { opacity: 0.45; cursor: not-al
   position: relative;
   transition: background 0.2s;
 }
-.toggle-switch input:checked + .toggle-track { background: var(--primary); }
+.toggle-switch input:checked + .toggle-track { background: var(--success); }
+.toggle-switch input:disabled + .toggle-track { opacity: 0.5; cursor: not-allowed; }
+.toggle-switch input:disabled { cursor: not-allowed; }
+.toggle-switch:has(input:disabled) { cursor: not-allowed; }
 .toggle-thumb {
   position: absolute;
   top: 3px; left: 3px;
