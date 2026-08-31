@@ -8,14 +8,26 @@ mod rate_limit;
 mod routes;
 mod ttl_cache;
 
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
 
 pub struct AdminAccessTokenCache {
     pub access_token: String,
@@ -196,7 +208,12 @@ async fn main() {
         firebase_admin_access_token: Mutex::new(None),
         google_vision_api_key: std::env::var("GOOGLE_VISION_API_KEY")
             .unwrap_or_else(|_| "placeholder-vision-api-key".into()),
-        http_client: reqwest::Client::new(),
+        http_client: reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(env_u64("UPSTREAM_TIMEOUT_SECS", 20)))
+            .pool_max_idle_per_host(16)
+            .build()
+            .expect("failed to build HTTP client"),
         swap_admin_key: std::env::var("SWAP_ADMIN_KEY").unwrap_or_default(),
         internal_cron_key: std::env::var("INTERNAL_CRON_KEY")
             .unwrap_or_else(|_| std::env::var("SWAP_ADMIN_KEY").unwrap_or_default()),
@@ -266,6 +283,18 @@ async fn main() {
     }
     tracing::info!("Moderator UID mirror sync enabled (every hour)");
 
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(120));
+            loop {
+                interval.tick().await;
+                rate_limit::sweep(&sweep_state).await;
+            }
+        });
+    }
+    tracing::info!("Rate-limit map sweep enabled (every 2 minutes)");
+
     if run_internal_cron {
 
         {
@@ -298,10 +327,24 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let body_limit = env_usize("MAX_BODY_BYTES", 512 * 1024);
+    let max_in_flight = env_usize("MAX_IN_FLIGHT_REQUESTS", 256);
+    let request_timeout = env_u64("REQUEST_TIMEOUT_SECS", 30);
+
     let app = Router::new()
         .nest("/api", routes::router(state.clone()))
         .layer(cors)
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(GlobalConcurrencyLimitLayer::new(max_in_flight))
+        .layer(TimeoutLayer::new(Duration::from_secs(request_timeout)))
         .layer(TraceLayer::new_for_http());
+
+    tracing::info!(
+        body_limit,
+        max_in_flight,
+        request_timeout,
+        "Request guard layers enabled"
+    );
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let addr = format!("0.0.0.0:{port}");

@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

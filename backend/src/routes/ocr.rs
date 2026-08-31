@@ -2,30 +2,47 @@ use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::models::{OcrRequest, OcrResponse};
 use crate::AppState;
-use axum::{extract::Extension, extract::State, routing::post, Json, Router};
+use axum::{extract::DefaultBodyLimit, extract::Extension, extract::State, routing::post, Json, Router};
 use regex::Regex;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+const MAX_IMAGE_BASE64_BYTES: usize = 14_000_000;
+
+fn number_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b\d{4,19}\b").unwrap())
+}
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/scan", post(scan_image))
+    Router::new()
+        .route("/scan", post(scan_image))
+        .layer(DefaultBodyLimit::max(MAX_IMAGE_BASE64_BYTES + 1_000_000))
 }
 
 async fn scan_image(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<OcrRequest>,
 ) -> Result<Json<OcrResponse>, AppError> {
 
-    if req.image_base64.len() > 14_000_000 {
+    if req.image_base64.len() > MAX_IMAGE_BASE64_BYTES {
         return Err(AppError::BadRequest(
             "Image too large; maximum is ~10 MB".into(),
         ));
     }
 
+    crate::rate_limit::check_rate_limit(
+        &state,
+        &format!("ocr-scan:{}", user.uid),
+        12,
+        60,
+        "scanning images",
+    ).await?;
+
     let raw_text = google_vision_ocr(&state, &req.image_base64).await?;
 
-    let re = Regex::new(r"\b\d{4,19}\b").unwrap();
-    let detected_numbers: Vec<String> = re
+    let detected_numbers: Vec<String> = number_regex()
         .find_iter(&raw_text)
         .map(|m| m.as_str().to_string())
         .collect();

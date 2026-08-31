@@ -625,6 +625,9 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
 }
 
 async fn claim_deposits(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("wallet-claim:{}", ctx.user.uid), 10, 60, "syncing deposits",
+    ).await?;
     let db = RtdbClient::new_admin(&ctx.state);
     apply_onchain_deposits(&ctx.state, &db, &ctx.user.uid).await?;
     let ledger = fetch_ledger_balance(&db, &ctx.user.uid).await?;
@@ -635,6 +638,9 @@ async fn claim_deposits(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
 }
 
 async fn get_balances(ctx: Ctx) -> Result<Json<WalletBalances>, AppError> {
+    crate::rate_limit::check_rate_limit(
+        &ctx.state, &format!("wallet-balances:{}", ctx.user.uid), 15, 60, "refreshing balances",
+    ).await?;
     let db = RtdbClient::new_admin(&ctx.state);
     let wallet = fetch_wallet_info(&db, &ctx.user.uid).await?;
 
@@ -755,7 +761,16 @@ pub async fn get_prices(Query(params): Query<HashMap<String, String>>, State(sta
     const STABLE_IDS: &[&str] = &["tether", "usd-coin"];
 
     let ids_str = params.get("ids").cloned().unwrap_or_default();
-    let requested: Vec<&str> = ids_str.split(',').filter(|s| !s.is_empty()).collect();
+    let requested: Vec<&str> = ids_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter(|id| STABLE_IDS.contains(id) || gecko_to_kraken(id).is_some())
+        .take(60)
+        .collect();
+
+    if requested.is_empty() {
+        return Ok(Json(serde_json::Value::Object(serde_json::Map::new())));
+    }
 
     let mut key_parts: Vec<String> = requested.iter().map(|s| s.to_string()).collect();
     key_parts.sort();

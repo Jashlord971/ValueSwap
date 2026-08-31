@@ -15,6 +15,24 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
 const GOOGLE_CERT_URL: &str = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const CERT_CACHE_KEY: &str = "google_signing_certs";
+const CERT_REFRESH_LOCK_KEY: &str = "google_signing_certs:refresh_lock";
+const CERT_CACHE_FALLBACK_TTL: u64 = 3600;
+const CERT_CACHE_MAX_TTL: u64 = 3600;
+const CERT_REFRESH_MIN_INTERVAL: u64 = 60;
+const BAN_CACHE_TTL: u64 = 30;
+
+fn trust_proxy_headers() -> bool {
+    std::env::var("TRUST_PROXY_HEADERS")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct BanStatus {
+    banned: bool,
+    reason: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FirebaseClaims {
@@ -34,6 +52,15 @@ pub struct AuthUser {
 }
 
 fn client_ip_from_req(req: &Request) -> Option<String> {
+    let socket_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+
+    if !trust_proxy_headers() {
+        return socket_ip;
+    }
+
     let headers = req.headers();
     for header_name in ["cf-connecting-ip", "x-real-ip"] {
         if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok()) {
@@ -51,9 +78,7 @@ fn client_ip_from_req(req: &Request) -> Option<String> {
             }
         }
     }
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string())
+    socket_ip
 }
 
 pub struct Ctx {
@@ -91,18 +116,33 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
     let claims = verify_firebase_token(&state, &token).await?;
     let ip = client_ip_from_req(&req);
 
-    let admin_db = RtdbClient::new_admin(&state);
-    if let Ok(Some(val)) = admin_db.get(&format!("users/{}", claims.sub)).await {
-        let banned = val.get("banned").and_then(|v| v.as_bool()).unwrap_or(false);
-        if banned {
-            let reason = val
-                .get("ban_reason")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| format!(": {s}"))
-                .unwrap_or_default();
-            return Err(AppError::Forbidden(format!("Your account has been banned{reason}")));
+    let ban_key = format!("authban:{}", claims.sub);
+    let ban_status = match state.ttl_cache.get::<BanStatus>(&ban_key).await {
+        Some(cached) => cached,
+        None => {
+            let admin_db = RtdbClient::new_admin(&state);
+            let status = match admin_db.get(&format!("users/{}", claims.sub)).await {
+                Ok(Some(val)) => BanStatus {
+                    banned: val.get("banned").and_then(|v| v.as_bool()).unwrap_or(false),
+                    reason: val
+                        .get("ban_reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                },
+                _ => BanStatus { banned: false, reason: String::new() },
+            };
+            state.ttl_cache.set(&ban_key, &status, BAN_CACHE_TTL).await;
+            status
         }
+    };
+    if ban_status.banned {
+        let suffix = if ban_status.reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", ban_status.reason)
+        };
+        return Err(AppError::Forbidden(format!("Your account has been banned{suffix}")));
     }
 
     req.extensions_mut().insert(AuthUser {
@@ -114,22 +154,73 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
     Ok(next.run(req).await)
 }
 
-async fn verify_firebase_token(state: &AppState, token: &str) -> Result<FirebaseClaims, AppError> {
-    let certs: HashMap<String, String> = state
+async fn fetch_google_signing_certs(state: &AppState) -> Result<HashMap<String, String>, AppError> {
+    let resp = state
         .http_client
         .get(GOOGLE_CERT_URL)
         .send()
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let ttl = resp
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.split(',').find_map(|part| {
+                part.trim()
+                    .strip_prefix("max-age=")
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            })
+        })
+        .unwrap_or(CERT_CACHE_FALLBACK_TTL)
+        .clamp(300, CERT_CACHE_MAX_TTL);
+
+    let certs: HashMap<String, String> = resp
         .json()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    state.ttl_cache.set(CERT_CACHE_KEY, &certs, ttl).await;
+    Ok(certs)
+}
+
+async fn google_signing_certs(state: &AppState) -> Result<HashMap<String, String>, AppError> {
+    if let Some(certs) = state.ttl_cache.get::<HashMap<String, String>>(CERT_CACHE_KEY).await {
+        return Ok(certs);
+    }
+    fetch_google_signing_certs(state).await
+}
+
+async fn refresh_certs_for_unknown_kid(
+    state: &AppState,
+    current: HashMap<String, String>,
+) -> HashMap<String, String> {
+    if state.ttl_cache.get::<bool>(CERT_REFRESH_LOCK_KEY).await.is_some() {
+        return current;
+    }
+    state
+        .ttl_cache
+        .set(CERT_REFRESH_LOCK_KEY, &true, CERT_REFRESH_MIN_INTERVAL)
+        .await;
+    match fetch_google_signing_certs(state).await {
+        Ok(fresh) => fresh,
+        Err(_) => current,
+    }
+}
+
+async fn verify_firebase_token(state: &AppState, token: &str) -> Result<FirebaseClaims, AppError> {
+    let mut certs = google_signing_certs(state).await?;
 
     let header = decode_header(token).map_err(|_| AppError::Unauthorized("Invalid token header".into()))?;
 
     let kid = header
         .kid
         .ok_or_else(|| AppError::Unauthorized("Token missing kid claim".into()))?;
+
+    if !certs.contains_key(&kid) {
+        certs = refresh_certs_for_unknown_kid(state, certs).await;
+    }
 
     let cert_pem = certs
         .get(&kid)

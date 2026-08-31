@@ -6,7 +6,7 @@ use crate::moderation::is_moderator_email_cached;
 use crate::presence::{ACTIVE_WINDOW_SECS, HEARTBEAT_MIN_INTERVAL_SECS};
 use crate::AppState;
 use axum::{
-    extract::{Path, Query},
+    extract::{DefaultBodyLimit, Path, Query},
     routing::{get, post},
     Json, Router,
 };
@@ -17,12 +17,16 @@ use tracing::info;
 use uuid::Uuid;
 
 pub fn router() -> Router<Arc<AppState>> {
+    let messages = Router::new()
+        .route("/:trade_id/messages", get(get_messages).post(send_message))
+        .layer(DefaultBodyLimit::max(MAX_VIDEO_DATA_URL_LEN + 1_048_576));
+
     Router::new()
         .route("/:trade_id/receipt-status", get(get_partner_receipt_status))
         .route("/:trade_id/sync", get(sync_chat))
-        .route("/:trade_id/messages", get(get_messages).post(send_message))
         .route("/:trade_id/mark-delivered", post(mark_delivered))
         .route("/:trade_id/mark-read", post(mark_read))
+        .merge(messages)
 }
 
 fn redact_message_for(mut msg: ChatMessage, viewer_uid: &str, viewer_is_moderator: bool) -> ChatMessage {
