@@ -44,7 +44,7 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 async fn ping_active(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let path = format!("users/{}", ctx.user.uid);
     let now = unix_now();
 
@@ -89,7 +89,7 @@ struct PublicProfile {
 }
 
 async fn get_user_public(ctx: Ctx, Path(uid): Path<String>) -> Result<Json<PublicProfile>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db.get(&format!("users/{}", uid)).await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
     let profile: UserProfile = serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -143,7 +143,7 @@ async fn get_user_public_by_username(ctx: Ctx, Path(username): Path<String>) -> 
         return Ok(Json(cached));
     }
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let entry_val = db.get(&format!("usernames/{}", lower)).await?
         .ok_or_else(|| AppError::NotFound(format!("User '{}' not found", username)))?;
     let entry = UsernameEntry::from_value(&entry_val, &username)
@@ -218,7 +218,7 @@ struct WarnUserRequest {
 }
 
 async fn warn_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<WarnUserRequest>) -> Result<Json<serde_json::Value>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
@@ -285,7 +285,7 @@ struct BanUserRequest {
 }
 
 async fn ban_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<BanUserRequest>) -> Result<Json<UserProfile>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
@@ -315,7 +315,7 @@ async fn ban_user(ctx: Ctx, Path(uid): Path<String>, Json(req): Json<BanUserRequ
 
 async fn upsert_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
     let (state, user) = (&ctx.state, &ctx.user);
-    let db = RtdbClient::new(state, &user.id_token);
+    let db = RtdbClient::new_admin(state);
     let path = format!("users/{}", user.uid);
 
     if let Some(val) = db.get(&path).await? {
@@ -428,7 +428,7 @@ async fn geolocate_country(http_client: &reqwest::Client, ip: &str) -> Option<St
 }
 
 async fn get_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("users/{}", ctx.user.uid))
         .await?
@@ -439,7 +439,7 @@ async fn get_me(ctx: Ctx) -> Result<Json<UserProfile>, AppError> {
 
 async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Json<UserProfile>, AppError> {
     let (state, user) = (&ctx.state, &ctx.user);
-    let db = RtdbClient::new(state, &user.id_token);
+    let db = RtdbClient::new_admin(state);
     let path = format!("users/{}", user.uid);
     let val = db.get(&path).await?.ok_or_else(|| AppError::NotFound("Profile not found".into()))?;
     let mut profile: UserProfile = serde_json::from_value(val).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -542,7 +542,7 @@ async fn update_me(ctx: Ctx, Json(req): Json<UpdateProfileRequest>) -> Result<Js
 }
 
 pub async fn resolve_recipient(ctx: Ctx, Json(req): Json<ResolveRecipientRequest>) -> Result<Json<ResolveRecipientResponse>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let identifier = req.identifier.trim().trim_start_matches('@');
 
     if identifier.is_empty() {

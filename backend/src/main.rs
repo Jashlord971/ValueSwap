@@ -254,6 +254,18 @@ async fn main() {
     }
     tracing::info!("Withdrawal queue processor enabled (every 30 seconds)");
 
+    {
+        let mod_sync_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                moderation::sync_moderator_uid_mirror(mod_sync_state.clone()).await;
+            }
+        });
+    }
+    tracing::info!("Moderator UID mirror sync enabled (every hour)");
+
     if run_internal_cron {
 
         {

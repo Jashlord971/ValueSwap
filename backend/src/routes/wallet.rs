@@ -124,7 +124,7 @@ struct DevSetBalanceUsdRequest {
 }
 
 async fn init_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let path = format!("wallets/{}", ctx.user.uid);
 
     if let Some(val) = db.get(&path).await? {
@@ -177,12 +177,12 @@ fn hashed_wallet_index(uid: &str, attempt: u32) -> u32 {
 }
 
 async fn get_wallet(ctx: Ctx) -> Result<Json<WalletInfo>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     Ok(Json(fetch_wallet_info(&db, &ctx.user.uid).await?))
 }
 
 async fn get_ledger(ctx: Ctx) -> Result<Json<LedgerBalance>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
 
     let onchain_check_key = format!("onchain-check:{}", ctx.user.uid);
     if ctx.state.ttl_cache.get::<bool>(&onchain_check_key).await.is_none() {
@@ -221,7 +221,7 @@ pub async fn record_transaction(
 }
 
 async fn list_transactions(ctx: Ctx) -> Result<Json<Vec<Transaction>>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let docs = db.get_collection(&format!("transactions/{}", ctx.user.uid)).await?;
     let mut txs = docs
         .into_iter()
@@ -240,7 +240,7 @@ async fn faucet_credit(ctx: Ctx, headers: HeaderMap, Json(req): Json<FaucetReque
     let coin = req.coin.to_lowercase();
     validate_coin(&coin)?;
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let current = fetch_ledger_balance(&db, &ctx.user.uid).await?;
     let updated = match coin.as_str() {
         "btc" => LedgerBalance { btc: current.btc + req.amount, ..current },
@@ -274,7 +274,7 @@ async fn dev_set_balance_usd(ctx: Ctx, Json(req): Json<DevSetBalanceUsdRequest>)
     }
 
     let target_coin_amount = req.usd_amount / usd_price;
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let path = format!("balances/{}/{}", ctx.user.uid, coin);
     db.set(&path, &serde_json::json!(target_coin_amount)).await?;
 
@@ -287,7 +287,7 @@ async fn dev_set_balance_usd(ctx: Ctx, Json(req): Json<DevSetBalanceUsdRequest>)
 }
 
 async fn get_platform_fees(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let fees = db.get("platform_fees").await?.unwrap_or(serde_json::json!({}));
     Ok(Json(fees))
 }
@@ -299,7 +299,7 @@ async fn sweep_platform_fees(ctx: Ctx, Json(req): Json<SweepFeesRequest>) -> Res
     let coin = req.coin.to_lowercase();
     validate_coin(&coin)?;
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let fee_path = format!("platform_fees/{}", coin);
     let treasury_path = format!("treasury/balances/{}", coin);
     let fee_bal = db.get(&fee_path).await?.and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -327,7 +327,7 @@ async fn sweep_platform_fees(ctx: Ctx, Json(req): Json<SweepFeesRequest>) -> Res
 pub const TREASURY_INDEX: u32 = 900_000;
 
 async fn get_treasury_addresses(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     if !crate::moderation::is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
@@ -385,7 +385,7 @@ async fn send_internal(ctx: Ctx, Json(req): Json<SendRequest>) -> Result<Json<Tr
         state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
     ).await?;
 
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     tracing::info!("/wallet/send: from_uid={}, to_email={}, coin={}, amount={}", user.uid, req.to_email, req.coin, req.amount);
 
     let sender_profile = fetch_user_profile(&db, &user.uid).await?;
@@ -479,7 +479,7 @@ async fn smart_send(ctx: Ctx, Json(req): Json<SmartSendRequest>) -> Result<Json<
         state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
     ).await?;
 
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let to_raw = req.to.trim().to_string();
     let identifier = to_raw.trim_start_matches('@');
 
@@ -625,7 +625,7 @@ async fn apply_onchain_deposits(state: &AppState, db: &RtdbClient<'_>, uid: &str
 }
 
 async fn claim_deposits(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     apply_onchain_deposits(&ctx.state, &db, &ctx.user.uid).await?;
     let ledger = fetch_ledger_balance(&db, &ctx.user.uid).await?;
     Ok(Json(serde_json::json!({
@@ -635,7 +635,7 @@ async fn claim_deposits(ctx: Ctx) -> Result<Json<serde_json::Value>, AppError> {
 }
 
 async fn get_balances(ctx: Ctx) -> Result<Json<WalletBalances>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let wallet = fetch_wallet_info(&db, &ctx.user.uid).await?;
 
     let (btc, eth_mainnet, eth_arbitrum, usdt_mainnet, usdt_arbitrum, usdc_mainnet, usdc_arbitrum) = tokio::join!(

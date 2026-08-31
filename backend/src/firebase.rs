@@ -6,36 +6,13 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-enum AuthMode<'a> {
-    UserToken(&'a str),
-    Admin,
-}
-
 pub struct RtdbClient<'a> {
     state: &'a AppState,
-    mode: AuthMode<'a>,
 }
 
 impl<'a> RtdbClient<'a> {
-    pub fn new(state: &'a AppState, id_token: &'a str) -> Self {
-        Self {
-            state,
-            mode: AuthMode::UserToken(id_token),
-        }
-    }
-
     pub fn new_admin(state: &'a AppState) -> Self {
-        Self {
-            state,
-            mode: AuthMode::Admin,
-        }
-    }
-
-    fn user_url(&self, path: &str, id_token: &str) -> String {
-        format!(
-            "{}/{}.json?auth={}",
-            self.state.firebase_database_url, path, id_token
-        )
+        Self { state }
     }
 
     fn bare_url(&self, path: &str) -> String {
@@ -122,34 +99,22 @@ impl<'a> RtdbClient<'a> {
     }
 
     pub async fn get(&self, path: &str) -> Result<Option<Value>, AppError> {
-        let resp = match &self.mode {
-            AuthMode::UserToken(id_token) => {
-                self.state
-                    .http_client
-                    .get(self.user_url(path, id_token))
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-            }
-            AuthMode::Admin => {
-                let auth = self.admin_access_token().await?;
-                if self.state.firebase_db_secret.trim().is_empty() {
-                    self.state
-                        .http_client
-                        .get(self.bare_url(path))
-                        .bearer_auth(auth)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                } else {
-                    self.state
-                        .http_client
-                        .get(format!("{}?auth={}", self.bare_url(path), auth))
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                }
-            }
+        let auth = self.admin_access_token().await?;
+        let resp = if self.state.firebase_db_secret.trim().is_empty() {
+            self.state
+                .http_client
+                .get(self.bare_url(path))
+                .bearer_auth(auth)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            self.state
+                .http_client
+                .get(format!("{}?auth={}", self.bare_url(path), auth))
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
         };
 
         if !resp.status().is_success() {
@@ -169,37 +134,24 @@ impl<'a> RtdbClient<'a> {
     }
 
     pub async fn set(&self, path: &str, data: &Value) -> Result<(), AppError> {
-        let resp = match &self.mode {
-            AuthMode::UserToken(id_token) => {
-                self.state
-                    .http_client
-                    .put(self.user_url(path, id_token))
-                    .json(data)
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-            }
-            AuthMode::Admin => {
-                let auth = self.admin_access_token().await?;
-                if self.state.firebase_db_secret.trim().is_empty() {
-                    self.state
-                        .http_client
-                        .put(self.bare_url(path))
-                        .bearer_auth(auth)
-                        .json(data)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                } else {
-                    self.state
-                        .http_client
-                        .put(format!("{}?auth={}", self.bare_url(path), auth))
-                        .json(data)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                }
-            }
+        let auth = self.admin_access_token().await?;
+        let resp = if self.state.firebase_db_secret.trim().is_empty() {
+            self.state
+                .http_client
+                .put(self.bare_url(path))
+                .bearer_auth(auth)
+                .json(data)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            self.state
+                .http_client
+                .put(format!("{}?auth={}", self.bare_url(path), auth))
+                .json(data)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
         };
 
         if !resp.status().is_success() {
@@ -213,34 +165,22 @@ impl<'a> RtdbClient<'a> {
     }
 
     pub async fn delete(&self, path: &str) -> Result<(), AppError> {
-        let resp = match &self.mode {
-            AuthMode::UserToken(id_token) => {
-                self.state
-                    .http_client
-                    .delete(self.user_url(path, id_token))
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-            }
-            AuthMode::Admin => {
-                let auth = self.admin_access_token().await?;
-                if self.state.firebase_db_secret.trim().is_empty() {
-                    self.state
-                        .http_client
-                        .delete(self.bare_url(path))
-                        .bearer_auth(auth)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                } else {
-                    self.state
-                        .http_client
-                        .delete(format!("{}?auth={}", self.bare_url(path), auth))
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                }
-            }
+        let auth = self.admin_access_token().await?;
+        let resp = if self.state.firebase_db_secret.trim().is_empty() {
+            self.state
+                .http_client
+                .delete(self.bare_url(path))
+                .bearer_auth(auth)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            self.state
+                .http_client
+                .delete(format!("{}?auth={}", self.bare_url(path), auth))
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
         };
 
         if !resp.status().is_success() {
@@ -262,39 +202,25 @@ impl<'a> RtdbClient<'a> {
     }
 
     pub async fn multi_path_update(&self, updates: serde_json::Map<String, Value>) -> Result<(), AppError> {
-        let resp = match &self.mode {
-            AuthMode::UserToken(id_token) => {
-                let url = format!("{}?auth={}", self.bare_root_url(), id_token);
-                self.state
-                    .http_client
-                    .patch(&url)
-                    .json(&Value::Object(updates))
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-            }
-            AuthMode::Admin => {
-                let auth = self.admin_access_token().await?;
-                if self.state.firebase_db_secret.trim().is_empty() {
-                    self.state
-                        .http_client
-                        .patch(self.bare_root_url())
-                        .bearer_auth(auth)
-                        .json(&Value::Object(updates))
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                } else {
-                    let url = format!("{}?auth={}", self.bare_root_url(), auth);
-                    self.state
-                        .http_client
-                        .patch(&url)
-                        .json(&Value::Object(updates))
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                }
-            }
+        let auth = self.admin_access_token().await?;
+        let resp = if self.state.firebase_db_secret.trim().is_empty() {
+            self.state
+                .http_client
+                .patch(self.bare_root_url())
+                .bearer_auth(auth)
+                .json(&Value::Object(updates))
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            let url = format!("{}?auth={}", self.bare_root_url(), auth);
+            self.state
+                .http_client
+                .patch(&url)
+                .json(&Value::Object(updates))
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
         };
 
         if !resp.status().is_success() {
@@ -311,48 +237,31 @@ impl<'a> RtdbClient<'a> {
         let order_by_val = format!("\"{}\"", order_by);
         let equal_to_val = format!("\"{}\"", equal_to);
         let base_url = self.bare_url(path);
-        let resp = match &self.mode {
-            AuthMode::UserToken(id_token) => {
-                self.state
-                    .http_client
-                    .get(&base_url)
-                    .query(&[
-                        ("auth", *id_token),
-                        ("orderBy", order_by_val.as_str()),
-                        ("equalTo", equal_to_val.as_str()),
-                    ])
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-            }
-            AuthMode::Admin => {
-                let auth = self.admin_access_token().await?;
-                if self.state.firebase_db_secret.trim().is_empty() {
-                    self.state
-                        .http_client
-                        .get(&base_url)
-                        .bearer_auth(auth)
-                        .query(&[
-                            ("orderBy", order_by_val.as_str()),
-                            ("equalTo", equal_to_val.as_str()),
-                        ])
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                } else {
-                    self.state
-                        .http_client
-                        .get(&base_url)
-                        .query(&[
-                            ("auth", auth.as_str()),
-                            ("orderBy", order_by_val.as_str()),
-                            ("equalTo", equal_to_val.as_str()),
-                        ])
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Internal(e.to_string()))?
-                }
-            }
+        let auth = self.admin_access_token().await?;
+        let resp = if self.state.firebase_db_secret.trim().is_empty() {
+            self.state
+                .http_client
+                .get(&base_url)
+                .bearer_auth(auth)
+                .query(&[
+                    ("orderBy", order_by_val.as_str()),
+                    ("equalTo", equal_to_val.as_str()),
+                ])
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            self.state
+                .http_client
+                .get(&base_url)
+                .query(&[
+                    ("auth", auth.as_str()),
+                    ("orderBy", order_by_val.as_str()),
+                    ("equalTo", equal_to_val.as_str()),
+                ])
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?
         };
 
         if !resp.status().is_success() {

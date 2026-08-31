@@ -265,7 +265,7 @@ fn effective_crypto_releaser_side(offer: &Offer) -> CryptoReleaserSide {
 async fn normalize_crypto_releaser_side(ctx: Ctx, headers: HeaderMap) -> Result<Json<serde_json::Value>, AppError> {
     require_admin_key(&ctx.state, &headers)?;
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let docs = db.get_collection("offers").await?;
 
     let mut scanned = 0u64;
@@ -505,14 +505,14 @@ async fn create_offer(ctx: Ctx, Json(req): Json<CreateOfferRequest>) -> Result<J
         state, &format!("offer-create:{}", user.uid), 5, 600, "creating offers",
     ).await?;
 
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &req.offer_type, None).await?;
 
     if !matches!(req.time_limit_secs, 900 | 1800 | 3600) {
         return Err(AppError::BadRequest("time_limit_secs must be 900 (15 min), 1800 (30 min), or 3600 (1 hr)".into()));
     }
 
-    let balance_db = RtdbClient::new(&state, &user.id_token);
+    let balance_db = RtdbClient::new_admin(&state);
     let balance_result = check_and_adjust_offer_balance(
         &balance_db,
         &state,
@@ -566,7 +566,7 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
     let state = &ctx.state;
     let user = &ctx.user;
     let is_market = query.market.unwrap_or(false);
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
 
     const OFFERS_CACHE_KEY: &str = "offers-collection";
     let mut offers: Vec<Offer> = if let Some(cached) = state.ttl_cache.get::<Vec<Offer>>(OFFERS_CACHE_KEY).await {
@@ -724,7 +724,7 @@ async fn list_offers(ctx: Ctx, Query(query): Query<OfferListQuery>) -> Result<Js
 
         offers = filtered;
     } else {
-        let balance_db = RtdbClient::new(&state, &user.id_token);
+        let balance_db = RtdbClient::new_admin(&state);
         let self_last_active_at = db
             .get(&format!("users/{}", user.uid))
             .await?
@@ -854,7 +854,7 @@ async fn fetch_coin_usd_price(state: &AppState, coin: &str) -> Result<f64, AppEr
 async fn toggle_offer_status(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOfferStatusRequest>) -> Result<Json<Offer>, AppError> {
     let state = &ctx.state;
     let user = &ctx.user;
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let val = db
         .get(&format!("offers/{}", id))
         .await?
@@ -871,7 +871,7 @@ async fn toggle_offer_status(ctx: Ctx, Path(id): Path<String>, Json(req): Json<U
 
     if req.active {
         let side = effective_crypto_releaser_side(&offer);
-        let balance_db = RtdbClient::new(&state, &user.id_token);
+        let balance_db = RtdbClient::new_admin(&state);
         let balance_result = check_and_adjust_offer_balance(
             &balance_db,
             &state,
@@ -912,7 +912,7 @@ async fn toggle_offer_status(ctx: Ctx, Path(id): Path<String>, Json(req): Json<U
 async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOfferRequest>) -> Result<Json<Offer>, AppError> {
     let state = &ctx.state;
     let user = &ctx.user;
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let val = db
         .get(&format!("offers/{}", id))
         .await?
@@ -958,7 +958,7 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
 
     ensure_no_duplicate_active_offer(&db, &user.uid, &card_id, &currency, &offer.offer_type, Some(&id)).await?;
 
-    let balance_db = RtdbClient::new(&state, &user.id_token);
+    let balance_db = RtdbClient::new_admin(&state);
     let balance_result = check_and_adjust_offer_balance(
         &balance_db,
         &state,
@@ -1000,7 +1000,7 @@ async fn update_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOf
 async fn delete_offer(ctx: Ctx, Path(id): Path<String>) -> Result<StatusCode, AppError> {
     let state = &ctx.state;
     let user = &ctx.user;
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let val = db
         .get(&format!("offers/{}", id))
         .await?

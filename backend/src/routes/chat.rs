@@ -36,7 +36,7 @@ fn redact_message_for(mut msg: ChatMessage, viewer_uid: &str, viewer_is_moderato
 }
 
 async fn get_messages(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<Vec<ChatMessage>>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let viewer_is_moderator = trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid;
 
@@ -85,7 +85,7 @@ struct SyncChatQuery {
 
 async fn send_message(ctx: Ctx, Path(trade_id): Path<String>, Json(req): Json<SendMessageRequest>) -> Result<Json<ChatMessage>, AppError> {
     let started = Instant::now();
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), true).await?;
     let sender_uid = ctx.user.uid.clone();
 
@@ -283,7 +283,7 @@ struct ChatMeta {
 
 async fn sync_chat(ctx: Ctx, Path(trade_id): Path<String>, Query(query): Query<SyncChatQuery>) -> Result<Json<ChatSyncResponse>, AppError> {
     let started = Instant::now();
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let trade_open = is_trade_open_for_chat(&trade);
     let viewer_is_moderator = trade.creator_uid != ctx.user.uid && trade.offer_owner_uid != ctx.user.uid;
@@ -372,7 +372,7 @@ async fn sync_chat(ctx: Ctx, Path(trade_id): Path<String>, Query(query): Query<S
 }
 
 async fn get_partner_receipt_status(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReceiptStatusResponse>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let partner_uid = if trade.creator_uid == ctx.user.uid {
         trade.offer_owner_uid.clone()
@@ -388,7 +388,7 @@ async fn get_partner_receipt_status(ctx: Ctx, Path(trade_id): Path<String>) -> R
 }
 
 async fn mark_delivered(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReceiptStatusResponse>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
 
     let mut receipt = get_user_receipt(&db, &trade_id, &ctx.user.uid).await?;
@@ -420,7 +420,7 @@ async fn mark_delivered(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<R
 
 async fn mark_read(ctx: Ctx, Path(trade_id): Path<String>) -> Result<Json<ReadStatusResponse>, AppError> {
     let started = Instant::now();
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let trade = ensure_trade_chat_access(&ctx.state, &db, &trade_id, &ctx.user.uid, ctx.user.email.as_deref(), false).await?;
     let partner_uid = if trade.creator_uid == ctx.user.uid {
         trade.offer_owner_uid.clone()

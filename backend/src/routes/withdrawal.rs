@@ -79,7 +79,7 @@ async fn withdraw_handler(
         &state, &format!("wallet-send:{}", user.uid), 8, 300, "attempting sends",
     ).await?;
 
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
 
     let sender_profile = fetch_user_profile(&db, &user.uid).await?;
     super::twofa::require_valid_totp_if_gated(

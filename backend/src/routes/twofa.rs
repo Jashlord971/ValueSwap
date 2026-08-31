@@ -102,7 +102,7 @@ struct SetupResponse {
 }
 
 async fn setup_2fa(ctx: Ctx) -> Result<Json<SetupResponse>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let profile = load_profile(&db, &ctx.user.uid).await?;
     if profile.totp_enabled {
         return Err(AppError::BadRequest("2FA is already enabled — disable it first to set up a new device.".into()));
@@ -139,7 +139,7 @@ fn normalize_code(raw: &str) -> String {
 }
 
 async fn confirm_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<UserProfile>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let pending_path = format!("totp_pending/{}", ctx.user.uid);
     let pending = db
         .get(&pending_path)
@@ -167,7 +167,7 @@ async fn confirm_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<User
 }
 
 async fn disable_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<UserProfile>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let path = format!("users/{}", ctx.user.uid);
     let mut profile = load_profile(&db, &ctx.user.uid).await?;
 
@@ -199,7 +199,7 @@ struct VerifyLoginResponse {
 }
 
 async fn verify_login_2fa(ctx: Ctx, Json(req): Json<CodeRequest>) -> Result<Json<VerifyLoginResponse>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let profile = load_profile(&db, &ctx.user.uid).await?;
 
     if !profile.totp_enabled {

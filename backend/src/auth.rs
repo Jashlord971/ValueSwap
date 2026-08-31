@@ -30,7 +30,6 @@ pub struct FirebaseClaims {
 pub struct AuthUser {
     pub uid: String,
     pub email: Option<String>,
-    pub id_token: String,
     pub ip: Option<String>,
 }
 
@@ -109,7 +108,6 @@ pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut req: Reques
     req.extensions_mut().insert(AuthUser {
         uid: claims.sub,
         email: claims.email,
-        id_token: token,
         ip,
     });
 

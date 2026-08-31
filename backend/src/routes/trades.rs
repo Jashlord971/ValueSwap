@@ -41,7 +41,7 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 async fn list_trades(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let docs = db.get_collection("trades").await?;
 
     let mut trades = docs
@@ -74,7 +74,7 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
         return Err(AppError::BadRequest("Coin is required".into()));
     }
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
 
     let offer_val = db
         .get(&format!("offers/{}", req.offer_id))
@@ -195,7 +195,7 @@ async fn create_trade(ctx: Ctx, Json(req): Json<CreateTradeRequest>) -> Result<J
 }
 
 async fn get_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?
@@ -218,7 +218,7 @@ async fn get_trade(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppE
 }
 
 async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     if !is_moderator_email_cached(&ctx.state, &db, ctx.user.email.as_deref()).await? {
         return Err(AppError::Forbidden("Moderator access required".into()));
     }
@@ -241,7 +241,7 @@ async fn list_disputes(ctx: Ctx) -> Result<Json<Vec<Trade>>, AppError> {
 }
 
 async fn complete_trade(ctx: Ctx, Path(id): Path<String>, Json(req): Json<CompleteTradeRequest>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?
@@ -338,7 +338,7 @@ async fn complete_trade(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Comple
 }
 
 async fn cancel_trade(ctx: Ctx, Path(id): Path<String>, body: Option<Json<CancelRequest>>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?
@@ -425,7 +425,7 @@ pub async fn expire_stale_trades(state: Arc<AppState>) {
 }
 
 async fn mark_paid(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db.get(&format!("trades/{}", id)).await?
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
@@ -471,7 +471,7 @@ fn sanitize_dispute_text(raw: &str) -> Result<String, AppError> {
 }
 
 async fn dispute_trade(ctx: Ctx, Path(id): Path<String>, Json(req): Json<DisputeTradeRequest>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db.get(&format!("trades/{}", id)).await?
         .ok_or_else(|| AppError::NotFound(format!("Trade '{}' not found", id)))?;
     let mut trade = serde_json::from_value::<Trade>(val)
@@ -522,7 +522,7 @@ async fn fetch_username(db: &RtdbClient<'_>, uid: &str) -> Option<String> {
 }
 
 async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<ResolveDisputeRequest>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?
@@ -583,7 +583,7 @@ async fn resolve_dispute(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Resol
 }
 
 async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTradeFeedbackRequest>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?
@@ -640,7 +640,7 @@ async fn leave_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveT
 }
 
 async fn edit_feedback(ctx: Ctx, Path(id): Path<String>, Json(req): Json<LeaveTradeFeedbackRequest>) -> Result<Json<Trade>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("trades/{}", id))
         .await?

@@ -30,7 +30,7 @@ async fn register_card(State(state): State<Arc<AppState>>, Extension(user): Exte
 
     let hash = sha256_hex(raw);
 
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let all_cards = db.get_collection("cards").await?;
     if all_cards.iter().any(|v| v.get("hash").and_then(|h| h.as_str()) == Some(&hash)) {
         return Err(AppError::BadRequest(
@@ -58,7 +58,7 @@ async fn register_card(State(state): State<Arc<AppState>>, Extension(user): Exte
     Ok(Json(card))
 }
 
-async fn check_card(State(state): State<Arc<AppState>>, Extension(user): Extension<AuthUser>,
+async fn check_card(State(state): State<Arc<AppState>>, Extension(_user): Extension<AuthUser>,
     Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, AppError> {
     let raw = body
         .get("card_number")
@@ -68,7 +68,7 @@ async fn check_card(State(state): State<Arc<AppState>>, Extension(user): Extensi
         .ok_or_else(|| AppError::BadRequest("card_number required".into()))?;
 
     let hash = sha256_hex(raw);
-    let db = RtdbClient::new(&state, &user.id_token);
+    let db = RtdbClient::new_admin(&state);
     let all_cards = db.get_collection("cards").await?;
     let count = all_cards
         .iter()

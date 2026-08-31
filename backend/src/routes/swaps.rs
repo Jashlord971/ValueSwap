@@ -38,7 +38,7 @@ struct ListSwapsQuery {
 const SWAP_OFFERS_CACHE_KEY: &str = "swap-offers-collection";
 
 async fn list_swap_offers(ctx: Ctx, Query(query): Query<ListSwapsQuery>) -> Result<Json<Vec<SwapOffer>>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let mine = query.mine.unwrap_or(false);
 
     let mut offers: Vec<SwapOffer> = if let Some(cached) = ctx.state.ttl_cache.get::<Vec<SwapOffer>>(SWAP_OFFERS_CACHE_KEY).await {
@@ -113,7 +113,7 @@ async fn create_swap_offer(ctx: Ctx, Json(req): Json<CreateSwapOfferRequest>) ->
         return Err(AppError::BadRequest("Computed amount to receive is invalid — adjust the profit/loss rate".into()));
     }
 
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
 
     lock_escrow(&db, &ctx.user.uid, &from_coin, req.max_amount).await?;
 
@@ -140,7 +140,7 @@ async fn create_swap_offer(ctx: Ctx, Json(req): Json<CreateSwapOfferRequest>) ->
 }
 
 async fn accept_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<AcceptSwapOfferRequest>) -> Result<Json<SwapOffer>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("swap_offers/{}", id))
         .await?
@@ -250,7 +250,7 @@ async fn accept_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Acc
 }
 
 async fn cancel_swap_offer(ctx: Ctx, Path(id): Path<String>) -> Result<Json<SwapOffer>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("swap_offers/{}", id))
         .await?
@@ -274,7 +274,7 @@ async fn cancel_swap_offer(ctx: Ctx, Path(id): Path<String>) -> Result<Json<Swap
 }
 
 async fn toggle_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateOfferStatusRequest>) -> Result<Json<SwapOffer>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("swap_offers/{}", id))
         .await?
@@ -295,7 +295,7 @@ async fn toggle_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Upd
 }
 
 async fn update_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<UpdateSwapOfferRequest>) -> Result<Json<SwapOffer>, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("swap_offers/{}", id))
         .await?
@@ -342,7 +342,7 @@ async fn update_swap_offer(ctx: Ctx, Path(id): Path<String>, Json(req): Json<Upd
 }
 
 async fn delete_swap_offer(ctx: Ctx, Path(id): Path<String>) -> Result<StatusCode, AppError> {
-    let db = RtdbClient::new(&ctx.state, &ctx.user.id_token);
+    let db = RtdbClient::new_admin(&ctx.state);
     let val = db
         .get(&format!("swap_offers/{}", id))
         .await?
